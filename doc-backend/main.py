@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 import PyPDF2
+import docx
 from pinecone import Pinecone
 from supabase import create_client, Client
 from google import genai
@@ -41,7 +42,7 @@ if not PINECONE_API_KEY or not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         "Missing required environment variables: PINECONE_API_KEY, SUPABASE_URL, or SUPABASE_SERVICE_KEY"
     )
 
-# Initialize Pinecone, Supabase, and Gemini clients (25s timeout)
+# Initialize Pinecone, Supabase, and Gemini clients
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(PINECONE_INDEX_NAME)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
@@ -69,6 +70,17 @@ def extract_text_from_pdf_bytes(file_bytes: bytes) -> str:
     return text
 
 
+def extract_text_from_docx_bytes(file_bytes: bytes) -> str:
+    doc = docx.Document(io.BytesIO(file_bytes))
+    parts = [p.text for p in doc.paragraphs if p.text.strip()]
+    for table in doc.tables:
+        for row in table.rows:
+            row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+            if row_text:
+                parts.append(row_text)
+    return "\n".join(parts)
+
+
 def chunk_text(text: str, chunk_size: int = 400, overlap: int = 50) -> List[str]:
     words = text.split()
     chunks = []
@@ -93,11 +105,10 @@ async def upload_file(file: UploadFile = File(...)):
         filename = file.filename or "unknown.pdf"
         file_bytes = await file.read()
 
-        # Deterministic SHA-256 hash of file contents prevents duplicate storage & indexing
         file_id = hashlib.sha256(file_bytes).hexdigest()[:32]
         storage_path = f"{file_id}/{filename}"
 
-        # 1. Always ensure the raw file exists in Supabase Storage (upsert overwrites cleanly)
+        # 1. Ensure raw file exists in Supabase Storage
         supabase.storage.from_(SUPABASE_BUCKET).upload(
             path=storage_path,
             file=file_bytes,
@@ -107,27 +118,16 @@ async def upload_file(file: UploadFile = File(...)):
             },
         )
 
-        # 2. Skip re-indexing if already in Pinecone
-        existing = index.documents.fetch(
-            namespace=PINECONE_NAMESPACE,
-            ids=[f"{file_id}_chunk_0"],
-        )
-        existing_docs = getattr(existing, "documents", None) or (
-            existing.get("documents", {}) if isinstance(existing, dict) else {}
-        )
-        if f"{file_id}_chunk_0" in existing_docs:
-            return {
-                "file_id": file_id,
-                "filename": filename,
-                "status": "already_exists",
-            }
-
-        # 3. Extract text and upsert to Pinecone in batches of 50
-        if filename.lower().endswith(".pdf"):
+        # 2. Extract clean text based on file extension
+        lower_name = filename.lower()
+        if lower_name.endswith(".pdf"):
             extracted_text = extract_text_from_pdf_bytes(file_bytes)
+        elif lower_name.endswith(".docx"):
+            extracted_text = extract_text_from_docx_bytes(file_bytes)
         else:
             extracted_text = file_bytes.decode("utf-8", errors="ignore")
 
+        # 3. Chunk and upsert to Pinecone in batches of 50 (overwrites any corrupt chunks cleanly)
         chunks = chunk_text(extracted_text)
         if chunks:
             documents = [

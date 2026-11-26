@@ -22,6 +22,14 @@ import {
   CheckCircle2,
   ArrowRight,
   RefreshCw,
+  Settings,
+  Palette,
+  Sun,
+  Moon,
+  Monitor,
+  ChevronRight,
+  ChevronDown,
+  Check,
 } from "lucide-react";
 
 const API_BASE = (
@@ -29,6 +37,8 @@ const API_BASE = (
 ).replace(/\/$/, "");
 
 const FREE_STORAGE_LIMIT_BYTES = 100 * 1024 * 1024; // 100 MB
+const PROFILE_STORAGE_KEY = "docubrain_profile_v1";
+const THEME_STORAGE_KEY = "docubrain_theme_v1";
 
 interface StoredDoc {
   id: string;
@@ -51,8 +61,22 @@ interface Message {
   matchedFiles?: MatchedFile[];
 }
 
+interface UserProfile {
+  fullName: string;
+  email: string;
+  photoDataUrl: string;
+}
+
 type SortOption = "newest" | "oldest" | "name" | "size";
-type ActiveTab = "dashboard" | "drive" | "favourites" | "chat";
+type ActiveTab = "dashboard" | "drive" | "favourites" | "chat" | "settings";
+type SettingsSection = "profile" | "storage" | "ai" | "theme";
+type ThemeMode = "light" | "dark" | "system";
+
+const DEFAULT_PROFILE: UserProfile = {
+  fullName: "Rahul Sharma",
+  email: "rahul@example.com",
+  photoDataUrl: "",
+};
 
 function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return "0.0 MB";
@@ -66,6 +90,13 @@ function formatShortDate(iso: string): string {
   const parsed = new Date(iso);
   if (isNaN(parsed.getTime())) return "—";
   return parsed.toISOString().split("T")[0];
+}
+
+function getInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "U";
+  if (parts.length === 1) return parts[0][0].toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
 }
 
 function inferCategory(filename: string, ext: string): {
@@ -118,12 +149,26 @@ function inferCategory(filename: string, ext: string): {
 export default function Home() {
   // Navigation & View States
   const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
+  const [settingsSection, setSettingsSection] =
+    useState<SettingsSection>("profile");
   const [sortBy, setSortBy] = useState<SortOption>("newest");
   const [globalSearch, setGlobalSearch] = useState<string>("");
 
   // Client-safe date & weekly upload states (avoid Date.now()/new Date() during prerender)
   const [uploadedThisWeek, setUploadedThisWeek] = useState<number>(0);
   const [todayFormatted, setTodayFormatted] = useState<string>("Overview");
+
+  // Profile & Theme States
+  const [profile, setProfile] = useState<UserProfile>(DEFAULT_PROFILE);
+  const [draftName, setDraftName] = useState<string>(DEFAULT_PROFILE.fullName);
+  const [draftEmail, setDraftEmail] = useState<string>(DEFAULT_PROFILE.email);
+  const [draftPhoto, setDraftPhoto] = useState<string>(
+    DEFAULT_PROFILE.photoDataUrl
+  );
+  const [profileSavedNotice, setProfileSavedNotice] = useState<boolean>(false);
+
+  const [themeMode, setThemeMode] = useState<ThemeMode>("light");
+  const [isDarkResolved, setIsDarkResolved] = useState<boolean>(false);
 
   // File Storage States
   const [files, setFiles] = useState<StoredDoc[]>([]);
@@ -144,7 +189,63 @@ export default function Home() {
   const [isSearching, setIsSearching] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Load saved profile & theme on client mount
+  useEffect(() => {
+    try {
+      const savedProfileRaw = localStorage.getItem(PROFILE_STORAGE_KEY);
+      if (savedProfileRaw) {
+        const parsed = JSON.parse(savedProfileRaw) as Partial<UserProfile>;
+        const merged: UserProfile = {
+          fullName: parsed.fullName || DEFAULT_PROFILE.fullName,
+          email: parsed.email || DEFAULT_PROFILE.email,
+          photoDataUrl: parsed.photoDataUrl || "",
+        };
+        setProfile(merged);
+        setDraftName(merged.fullName);
+        setDraftEmail(merged.email);
+        setDraftPhoto(merged.photoDataUrl);
+      }
+
+      const savedTheme = localStorage.getItem(
+        THEME_STORAGE_KEY
+      ) as ThemeMode | null;
+      if (
+        savedTheme === "light" ||
+        savedTheme === "dark" ||
+        savedTheme === "system"
+      ) {
+        setThemeMode(savedTheme);
+      }
+    } catch {
+      // Ignore storage read errors
+    }
+  }, []);
+
+  // Resolve system / explicit theme
+  useEffect(() => {
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, themeMode);
+    } catch {
+      // Ignore storage write errors
+    }
+
+    const computeDark = () => {
+      if (themeMode === "dark") return true;
+      if (themeMode === "light") return false;
+      return window.matchMedia("(prefers-color-scheme: dark)").matches;
+    };
+
+    setIsDarkResolved(computeDark());
+
+    if (themeMode !== "system") return;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const listener = () => setIsDarkResolved(media.matches);
+    media.addEventListener("change", listener);
+    return () => media.removeEventListener("change", listener);
+  }, [themeMode]);
 
   const loadFiles = async (selectedSort: SortOption = sortBy) => {
     setIsLoadingFiles(true);
@@ -189,6 +290,46 @@ export default function Home() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isSearching]);
+
+  const handleAvatarFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = e.target.files?.[0];
+    if (!selected) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        setDraftPhoto(reader.result);
+      }
+    };
+    reader.readAsDataURL(selected);
+    e.target.value = "";
+  };
+
+  const handleSaveProfile = (e: React.FormEvent) => {
+    e.preventDefault();
+    const updated: UserProfile = {
+      fullName: draftName.trim() || DEFAULT_PROFILE.fullName,
+      email: draftEmail.trim() || DEFAULT_PROFILE.email,
+      photoDataUrl: draftPhoto,
+    };
+    setProfile(updated);
+    setDraftName(updated.fullName);
+    setDraftEmail(updated.email);
+    try {
+      localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(updated));
+    } catch {
+      // Ignore storage write errors
+    }
+    setProfileSavedNotice(true);
+    setTimeout(() => setProfileSavedNotice(false), 2500);
+  };
+
+  const handleCancelProfile = () => {
+    setDraftName(profile.fullName);
+    setDraftEmail(profile.email);
+    setDraftPhoto(profile.photoDataUrl);
+    setProfileSavedNotice(false);
+  };
 
   const handleToggleFavorite = async (fileId: string) => {
     setFiles((prev) =>
@@ -364,10 +505,19 @@ export default function Home() {
     drive: "All Documents",
     favourites: "Favorites",
     chat: "AI Search",
+    settings: "Settings",
   };
 
+  const firstName = profile.fullName.trim().split(/\s+/)[0] || "there";
+
   return (
-    <div className="flex h-screen bg-[#F8F9FC] text-slate-900 font-sans">
+    <div
+      className={`flex h-screen font-sans transition-colors ${
+        isDarkResolved
+          ? "bg-slate-950 text-slate-100"
+          : "bg-[#F8F9FC] text-slate-900"
+      }`}
+    >
       <input
         type="file"
         ref={fileInputRef}
@@ -375,18 +525,29 @@ export default function Home() {
         className="hidden"
         accept=".pdf,.docx,.txt,.md,.csv,.py,.js,.ts,.json"
       />
+      <input
+        type="file"
+        ref={avatarInputRef}
+        onChange={handleAvatarFileChange}
+        className="hidden"
+        accept="image/*"
+      />
 
       {/* LEFT SIDEBAR */}
-      <aside className="w-64 bg-white border-r border-slate-200/80 flex flex-col justify-between p-4">
+      <aside
+        className={`w-64 border-r flex flex-col justify-between p-4 transition-colors ${
+          isDarkResolved
+            ? "bg-slate-900 border-slate-800"
+            : "bg-white border-slate-200/80"
+        }`}
+      >
         <div>
           <div className="flex items-center gap-3 px-2 py-2 mb-6">
             <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-sm">
               <Sparkles className="w-5 h-5" />
             </div>
             <div>
-              <h1 className="font-bold text-base leading-tight text-slate-900">
-                DocuBrain
-              </h1>
+              <h1 className="font-bold text-base leading-tight">DocuBrain</h1>
               <span className="text-[11px] font-semibold tracking-wider text-indigo-600 uppercase">
                 AI
               </span>
@@ -398,7 +559,11 @@ export default function Home() {
               onClick={() => setActiveTab("dashboard")}
               className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
                 activeTab === "dashboard"
-                  ? "bg-indigo-50 text-indigo-600"
+                  ? isDarkResolved
+                    ? "bg-indigo-950/80 text-indigo-300"
+                    : "bg-indigo-50 text-indigo-600"
+                  : isDarkResolved
+                  ? "text-slate-300 hover:bg-slate-800"
                   : "text-slate-600 hover:bg-slate-50"
               }`}
             >
@@ -413,7 +578,11 @@ export default function Home() {
               }}
               className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
                 activeTab === "drive"
-                  ? "bg-indigo-50 text-indigo-600"
+                  ? isDarkResolved
+                    ? "bg-indigo-950/80 text-indigo-300"
+                    : "bg-indigo-50 text-indigo-600"
+                  : isDarkResolved
+                  ? "text-slate-300 hover:bg-slate-800"
                   : "text-slate-600 hover:bg-slate-50"
               }`}
             >
@@ -421,7 +590,13 @@ export default function Home() {
                 <Files className="w-4 h-4" />
                 <span>All Documents</span>
               </span>
-              <span className="text-xs font-semibold bg-indigo-100/70 text-indigo-600 px-2 py-0.5 rounded-full">
+              <span
+                className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                  isDarkResolved
+                    ? "bg-indigo-950 text-indigo-300"
+                    : "bg-indigo-100/70 text-indigo-600"
+                }`}
+              >
                 {files.length}
               </span>
             </button>
@@ -433,7 +608,11 @@ export default function Home() {
               }}
               className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
                 activeTab === "favourites"
-                  ? "bg-indigo-50 text-indigo-600"
+                  ? isDarkResolved
+                    ? "bg-indigo-950/80 text-indigo-300"
+                    : "bg-indigo-50 text-indigo-600"
+                  : isDarkResolved
+                  ? "text-slate-300 hover:bg-slate-800"
                   : "text-slate-600 hover:bg-slate-50"
               }`}
             >
@@ -447,7 +626,13 @@ export default function Home() {
                 />
                 <span>Favorites</span>
               </span>
-              <span className="text-xs font-semibold bg-indigo-100/70 text-indigo-600 px-2 py-0.5 rounded-full">
+              <span
+                className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                  isDarkResolved
+                    ? "bg-indigo-950 text-indigo-300"
+                    : "bg-indigo-100/70 text-indigo-600"
+                }`}
+              >
                 {favouriteCount}
               </span>
             </button>
@@ -456,7 +641,11 @@ export default function Home() {
               onClick={() => setActiveTab("chat")}
               className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
                 activeTab === "chat"
-                  ? "bg-indigo-50 text-indigo-600"
+                  ? isDarkResolved
+                    ? "bg-indigo-950/80 text-indigo-300"
+                    : "bg-indigo-50 text-indigo-600"
+                  : isDarkResolved
+                  ? "text-slate-300 hover:bg-slate-800"
                   : "text-slate-600 hover:bg-slate-50"
               }`}
             >
@@ -467,7 +656,11 @@ export default function Home() {
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isUploading}
-              className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-50 transition"
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
+                isDarkResolved
+                  ? "text-slate-300 hover:bg-slate-800"
+                  : "text-slate-600 hover:bg-slate-50"
+              }`}
             >
               {isUploading ? (
                 <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
@@ -476,17 +669,57 @@ export default function Home() {
               )}
               <span>{isUploading ? "Uploading..." : "Upload / Import"}</span>
             </button>
+
+            <button
+              onClick={() => setActiveTab("settings")}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
+                activeTab === "settings"
+                  ? isDarkResolved
+                    ? "bg-indigo-950/80 text-indigo-300"
+                    : "bg-indigo-50 text-indigo-600"
+                  : isDarkResolved
+                  ? "text-slate-300 hover:bg-slate-800"
+                  : "text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              <Settings className="w-4 h-4" />
+              <span>Settings</span>
+            </button>
           </nav>
         </div>
 
-        <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4">
+        <div
+          className={`border rounded-2xl p-4 transition-colors ${
+            isDarkResolved
+              ? "bg-slate-800/70 border-slate-700/80"
+              : "bg-slate-50 border-slate-200/80"
+          }`}
+        >
           <div className="flex items-center justify-between text-xs mb-2">
-            <span className="text-slate-500 font-medium">Storage Used</span>
-            <span className="font-semibold text-slate-700">
+            <span
+              className={
+                isDarkResolved
+                  ? "text-slate-400 font-medium"
+                  : "text-slate-500 font-medium"
+              }
+            >
+              Storage Used
+            </span>
+            <span
+              className={
+                isDarkResolved
+                  ? "font-semibold text-slate-200"
+                  : "font-semibold text-slate-700"
+              }
+            >
               {formatBytes(totalBytesUsed)} / 100 MB
             </span>
           </div>
-          <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+          <div
+            className={`w-full h-2 rounded-full overflow-hidden ${
+              isDarkResolved ? "bg-slate-700" : "bg-slate-200"
+            }`}
+          >
             <div
               className="h-full bg-indigo-600 rounded-full transition-all duration-300"
               style={{ width: `${Math.max(4, storagePercent)}%` }}
@@ -497,9 +730,15 @@ export default function Home() {
 
       {/* RIGHT MAIN SHELL */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-16 bg-white border-b border-slate-200/80 px-8 flex items-center justify-between gap-4">
+        <header
+          className={`h-16 border-b px-8 flex items-center justify-between gap-4 transition-colors ${
+            isDarkResolved
+              ? "bg-slate-900 border-slate-800"
+              : "bg-white border-slate-200/80"
+          }`}
+        >
           <div className="flex items-center gap-6 flex-1">
-            <span className="font-semibold text-slate-800 text-sm">
+            <span className="font-semibold text-sm">
               {tabTitleMap[activeTab]}
             </span>
 
@@ -513,7 +752,11 @@ export default function Home() {
                 value={globalSearch}
                 onChange={(e) => setGlobalSearch(e.target.value)}
                 placeholder="Search documents..."
-                className="w-full bg-slate-100/80 border border-transparent focus:border-indigo-300 focus:bg-white rounded-xl pl-10 pr-4 py-2 text-sm outline-none transition"
+                className={`w-full border border-transparent focus:border-indigo-400 rounded-xl pl-10 pr-4 py-2 text-sm outline-none transition ${
+                  isDarkResolved
+                    ? "bg-slate-800 text-slate-100 focus:bg-slate-900"
+                    : "bg-slate-100/80 text-slate-900 focus:bg-white"
+                }`}
               />
             </form>
           </div>
@@ -521,7 +764,11 @@ export default function Home() {
           <div className="flex items-center gap-3">
             <button
               onClick={() => setActiveTab("chat")}
-              className="flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-xl transition"
+              className={`flex items-center gap-2 px-3.5 py-2 text-sm font-medium rounded-xl transition ${
+                isDarkResolved
+                  ? "text-indigo-300 bg-indigo-950/80 hover:bg-indigo-900/70"
+                  : "text-indigo-600 bg-indigo-50 hover:bg-indigo-100"
+              }`}
             >
               <Sparkles className="w-4 h-4" />
               <span>AI Search</span>
@@ -539,6 +786,25 @@ export default function Home() {
               )}
               <span>{isUploading ? "Indexing..." : "Upload"}</span>
             </button>
+
+            <button
+              onClick={() => {
+                setSettingsSection("profile");
+                setActiveTab("settings");
+              }}
+              title={profile.fullName}
+              className="w-9 h-9 rounded-full bg-indigo-600 text-white text-xs font-semibold flex items-center justify-center overflow-hidden shadow-xs hover:ring-2 hover:ring-indigo-400 transition"
+            >
+              {profile.photoDataUrl ? (
+                <img
+                  src={profile.photoDataUrl}
+                  alt={profile.fullName}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                getInitials(profile.fullName)
+              )}
+            </button>
           </div>
         </header>
 
@@ -547,11 +813,9 @@ export default function Home() {
             <div className="p-8 max-w-7xl mx-auto space-y-6">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div>
-                  <h2 className="text-2xl font-bold text-slate-900">
-                    Dashboard
-                  </h2>
+                  <h2 className="text-2xl font-bold">Dashboard</h2>
                   <p className="text-sm text-slate-500 mt-0.5">
-                    Welcome back · {todayFormatted}
+                    Welcome back, {firstName} · {todayFormatted}
                   </p>
                 </div>
 
@@ -566,14 +830,18 @@ export default function Home() {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-                <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs flex items-start justify-between">
+                <div
+                  className={`border rounded-2xl p-5 shadow-xs flex items-start justify-between ${
+                    isDarkResolved
+                      ? "bg-slate-900 border-slate-800"
+                      : "bg-white border-slate-200/80"
+                  }`}
+                >
                   <div>
                     <p className="text-sm font-medium text-slate-500">
                       Total Documents
                     </p>
-                    <p className="text-3xl font-bold text-slate-900 mt-2">
-                      {files.length}
-                    </p>
+                    <p className="text-3xl font-bold mt-2">{files.length}</p>
                     <p className="text-xs text-slate-400 mt-1">
                       across all categories
                     </p>
@@ -586,14 +854,18 @@ export default function Home() {
                   </div>
                 </div>
 
-                <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs flex items-start justify-between">
+                <div
+                  className={`border rounded-2xl p-5 shadow-xs flex items-start justify-between ${
+                    isDarkResolved
+                      ? "bg-slate-900 border-slate-800"
+                      : "bg-white border-slate-200/80"
+                  }`}
+                >
                   <div>
                     <p className="text-sm font-medium text-slate-500">
                       Docs Analyzed
                     </p>
-                    <p className="text-3xl font-bold text-slate-900 mt-2">
-                      {files.length}
-                    </p>
+                    <p className="text-3xl font-bold mt-2">{files.length}</p>
                     <p className="text-xs text-slate-400 mt-1">
                       100% success rate
                     </p>
@@ -606,12 +878,18 @@ export default function Home() {
                   </div>
                 </div>
 
-                <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs flex items-start justify-between">
+                <div
+                  className={`border rounded-2xl p-5 shadow-xs flex items-start justify-between ${
+                    isDarkResolved
+                      ? "bg-slate-900 border-slate-800"
+                      : "bg-white border-slate-200/80"
+                  }`}
+                >
                   <div>
                     <p className="text-sm font-medium text-slate-500">
                       Categories
                     </p>
-                    <p className="text-3xl font-bold text-slate-900 mt-2">
+                    <p className="text-3xl font-bold mt-2">
                       {activeCategoriesCount}
                     </p>
                     <p className="text-xs text-slate-400 mt-1">
@@ -623,12 +901,18 @@ export default function Home() {
                   </div>
                 </div>
 
-                <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs flex items-start justify-between">
+                <div
+                  className={`border rounded-2xl p-5 shadow-xs flex items-start justify-between ${
+                    isDarkResolved
+                      ? "bg-slate-900 border-slate-800"
+                      : "bg-white border-slate-200/80"
+                  }`}
+                >
                   <div>
                     <p className="text-sm font-medium text-slate-500">
                       Storage Used
                     </p>
-                    <p className="text-3xl font-bold text-slate-900 mt-2">
+                    <p className="text-3xl font-bold mt-2">
                       {formatBytes(totalBytesUsed)}
                     </p>
                     <p className="text-xs text-slate-400 mt-1">
@@ -642,13 +926,17 @@ export default function Home() {
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div className="lg:col-span-2 bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs">
+                <div
+                  className={`lg:col-span-2 border rounded-2xl p-6 shadow-xs ${
+                    isDarkResolved
+                      ? "bg-slate-900 border-slate-800"
+                      : "bg-white border-slate-200/80"
+                  }`}
+                >
                   <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-2">
                       <Clock className="w-4 h-4 text-slate-500" />
-                      <h3 className="font-semibold text-slate-900">
-                        Recent Documents
-                      </h3>
+                      <h3 className="font-semibold">Recent Documents</h3>
                     </div>
                     <button
                       onClick={() => setActiveTab("drive")}
@@ -666,7 +954,7 @@ export default function Home() {
                     </div>
                   ) : recentFiles.length === 0 ? (
                     <div className="text-center py-12 border border-dashed border-slate-200 rounded-xl">
-                      <p className="text-sm font-medium text-slate-600">
+                      <p className="text-sm font-medium text-slate-500">
                         No documents uploaded yet
                       </p>
                       <p className="text-xs text-slate-400 mt-1">
@@ -680,7 +968,11 @@ export default function Home() {
                         return (
                           <div
                             key={doc.id}
-                            className="flex items-center justify-between gap-4 p-3.5 rounded-xl border border-slate-100 hover:border-slate-200 hover:bg-slate-50/60 transition"
+                            className={`flex items-center justify-between gap-4 p-3.5 rounded-xl border transition ${
+                              isDarkResolved
+                                ? "border-slate-800 hover:bg-slate-800/60"
+                                : "border-slate-100 hover:border-slate-200 hover:bg-slate-50/60"
+                            }`}
                           >
                             <div className="flex items-center gap-3.5 min-w-0 flex-1">
                               <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
@@ -691,12 +983,13 @@ export default function Home() {
                                   href={`${API_BASE}/api/download/${doc.id}`}
                                   target="_blank"
                                   rel="noreferrer"
-                                  className="font-semibold text-sm text-slate-800 hover:text-indigo-600 truncate block"
+                                  className="font-semibold text-sm hover:text-indigo-600 truncate block"
                                 >
                                   {doc.name}
                                 </a>
                                 <p className="text-xs text-slate-400 truncate mt-0.5">
-                                  {doc.type.toUpperCase()} · ID {doc.id.slice(0, 8)}
+                                  {doc.type.toUpperCase()} · ID{" "}
+                                  {doc.id.slice(0, 8)}
                                 </p>
                               </div>
                             </div>
@@ -708,7 +1001,7 @@ export default function Home() {
                             </span>
 
                             <div className="hidden md:block text-right text-xs">
-                              <p className="text-slate-600 font-medium">
+                              <p className="font-medium">
                                 {formatShortDate(doc.uploadedAt)}
                               </p>
                               <p className="text-slate-400 mt-0.5">
@@ -747,18 +1040,22 @@ export default function Home() {
                 </div>
 
                 <div>
-                  <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs">
+                  <div
+                    className={`border rounded-2xl p-6 shadow-xs ${
+                      isDarkResolved
+                        ? "bg-slate-900 border-slate-800"
+                        : "bg-white border-slate-200/80"
+                    }`}
+                  >
                     <div className="flex items-center gap-2 mb-5">
                       <Sparkles className="w-4 h-4 text-indigo-600" />
-                      <h3 className="font-semibold text-slate-900">
-                        AI Analysis
-                      </h3>
+                      <h3 className="font-semibold">AI Analysis</h3>
                     </div>
 
                     <div className="space-y-4 text-sm">
                       <div>
                         <div className="flex items-center justify-between mb-1.5">
-                          <span className="text-slate-600">Analyzed</span>
+                          <span className="text-slate-500">Analyzed</span>
                           <span className="font-semibold text-emerald-600">
                             {files.length}
                           </span>
@@ -773,7 +1070,7 @@ export default function Home() {
 
                       <div>
                         <div className="flex items-center justify-between mb-1.5">
-                          <span className="text-slate-600">Analyzing</span>
+                          <span className="text-slate-500">Analyzing</span>
                           <span className="font-semibold text-amber-500">
                             {isUploading ? 1 : 0}
                           </span>
@@ -788,7 +1085,7 @@ export default function Home() {
 
                       <div>
                         <div className="flex items-center justify-between mb-1.5">
-                          <span className="text-slate-600">Pending</span>
+                          <span className="text-slate-500">Pending</span>
                           <span className="font-semibold text-slate-400">0</span>
                         </div>
                         <div className="w-full h-2 bg-slate-100 rounded-full" />
@@ -796,7 +1093,7 @@ export default function Home() {
 
                       <div>
                         <div className="flex items-center justify-between mb-1.5">
-                          <span className="text-slate-600">Errors</span>
+                          <span className="text-slate-500">Errors</span>
                           <span className="font-semibold text-rose-500">0</span>
                         </div>
                         <div className="w-full h-2 bg-slate-100 rounded-full" />
@@ -812,7 +1109,7 @@ export default function Home() {
             <div className="p-8 max-w-7xl mx-auto">
               <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
                 <div>
-                  <h2 className="text-2xl font-bold text-slate-900">
+                  <h2 className="text-2xl font-bold">
                     {activeTab === "favourites"
                       ? `Favorites (${displayedListFiles.length})`
                       : `All Documents (${displayedListFiles.length})`}
@@ -830,7 +1127,11 @@ export default function Home() {
                     <select
                       value={sortBy}
                       onChange={(e) => setSortBy(e.target.value as SortOption)}
-                      className="border border-slate-200 rounded-xl px-3 py-2 bg-white text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500"
+                      className={`border rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 ${
+                        isDarkResolved
+                          ? "bg-slate-900 border-slate-700 text-slate-200"
+                          : "bg-white border-slate-200 text-slate-700"
+                      }`}
                     >
                       <option value="newest">Newest First</option>
                       <option value="oldest">Oldest First</option>
@@ -842,10 +1143,16 @@ export default function Home() {
                   <button
                     onClick={() => loadFiles(sortBy)}
                     title="Refresh"
-                    className="p-2.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl transition"
+                    className={`p-2.5 border rounded-xl transition ${
+                      isDarkResolved
+                        ? "bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800"
+                        : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+                    }`}
                   >
                     <RefreshCw
-                      className={`w-4 h-4 ${isLoadingFiles ? "animate-spin" : ""}`}
+                      className={`w-4 h-4 ${
+                        isLoadingFiles ? "animate-spin" : ""
+                      }`}
                     />
                   </button>
                 </div>
@@ -857,8 +1164,14 @@ export default function Home() {
                   <span>Loading documents...</span>
                 </div>
               ) : displayedListFiles.length === 0 ? (
-                <div className="text-center py-16 bg-white border border-dashed border-slate-300 rounded-2xl">
-                  <p className="text-slate-600 font-medium">
+                <div
+                  className={`text-center py-16 border border-dashed rounded-2xl ${
+                    isDarkResolved
+                      ? "bg-slate-900 border-slate-800"
+                      : "bg-white border-slate-300"
+                  }`}
+                >
+                  <p className="font-medium">
                     {activeTab === "favourites"
                       ? "No favorite documents yet"
                       : "No documents found"}
@@ -870,9 +1183,21 @@ export default function Home() {
                   </p>
                 </div>
               ) : (
-                <div className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-xs">
+                <div
+                  className={`border rounded-2xl overflow-hidden shadow-xs ${
+                    isDarkResolved
+                      ? "bg-slate-900 border-slate-800"
+                      : "bg-white border-slate-200/80"
+                  }`}
+                >
                   <table className="w-full text-left text-sm">
-                    <thead className="bg-slate-50 border-b border-slate-200/80 text-xs uppercase text-slate-500">
+                    <thead
+                      className={`border-b text-xs uppercase text-slate-500 ${
+                        isDarkResolved
+                          ? "bg-slate-800/60 border-slate-800"
+                          : "bg-slate-50 border-slate-200/80"
+                      }`}
+                    >
                       <tr>
                         <th className="py-3.5 px-4 w-12">#</th>
                         <th className="py-3.5 px-4">Document</th>
@@ -883,13 +1208,13 @@ export default function Home() {
                         <th className="py-3.5 px-4 text-right">Actions</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100">
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                       {displayedListFiles.map((doc, idx) => {
                         const cat = inferCategory(doc.name, doc.type);
                         return (
                           <tr
                             key={doc.id}
-                            className="hover:bg-slate-50/70 transition"
+                            className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition"
                           >
                             <td className="py-3.5 px-4 text-slate-400 font-mono text-xs">
                               {idx + 1}
@@ -898,7 +1223,7 @@ export default function Home() {
                               <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
                                 <FileText className="w-4 h-4" />
                               </div>
-                              <span className="truncate max-w-md text-slate-800">
+                              <span className="truncate max-w-md">
                                 {doc.name}
                               </span>
                             </td>
@@ -991,6 +1316,8 @@ export default function Home() {
                         className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
                           msg.role === "user"
                             ? "bg-indigo-600 text-white"
+                            : isDarkResolved
+                            ? "bg-slate-800 text-slate-200"
                             : "bg-slate-200 text-slate-700"
                         }`}
                       >
@@ -1004,6 +1331,8 @@ export default function Home() {
                         className={`p-4 rounded-2xl text-sm ${
                           msg.role === "user"
                             ? "bg-indigo-600 text-white rounded-tr-none"
+                            : isDarkResolved
+                            ? "bg-slate-900 border border-slate-800 text-slate-100 rounded-tl-none"
                             : "bg-white border border-slate-200/80 text-slate-800 shadow-xs rounded-tl-none"
                         }`}
                       >
@@ -1012,7 +1341,7 @@ export default function Home() {
                         </p>
 
                         {msg.matchedFiles && msg.matchedFiles.length > 0 && (
-                          <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+                          <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
                             <p className="text-xs font-bold text-slate-500 uppercase">
                               Matching Documents:
                             </p>
@@ -1079,7 +1408,11 @@ export default function Home() {
 
               <form
                 onSubmit={handleSendMessage}
-                className="p-4 bg-white border-t border-slate-200/80"
+                className={`p-4 border-t ${
+                  isDarkResolved
+                    ? "bg-slate-900 border-slate-800"
+                    : "bg-white border-slate-200/80"
+                }`}
               >
                 <div className="max-w-4xl mx-auto relative flex items-center">
                   <input
@@ -1087,7 +1420,11 @@ export default function Home() {
                     value={inputQuery}
                     onChange={(e) => setInputQuery(e.target.value)}
                     placeholder="Ask about topics, summarize a document, or find a file..."
-                    className="w-full bg-slate-100 rounded-full pl-5 pr-12 py-3 text-sm outline-none focus:bg-white focus:ring-2 focus:ring-indigo-500 transition"
+                    className={`w-full rounded-full pl-5 pr-12 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition ${
+                      isDarkResolved
+                        ? "bg-slate-800 text-slate-100 focus:bg-slate-950"
+                        : "bg-slate-100 text-slate-900 focus:bg-white"
+                    }`}
                   />
                   <button
                     type="submit"
@@ -1098,6 +1435,375 @@ export default function Home() {
                   </button>
                 </div>
               </form>
+            </div>
+          )}
+
+          {activeTab === "settings" && (
+            /* ================= SETTINGS VIEW ================= */
+            <div className="p-8 max-w-6xl mx-auto">
+              <div className="mb-6">
+                <h2 className="text-2xl font-bold">Settings</h2>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  Manage your account and app preferences
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                {/* Left Settings Menu Card */}
+                <div
+                  className={`lg:col-span-4 border rounded-2xl p-2.5 shadow-xs space-y-1 ${
+                    isDarkResolved
+                      ? "bg-slate-900 border-slate-800"
+                      : "bg-white border-slate-200/80"
+                  }`}
+                >
+                  <button
+                    onClick={() => setSettingsSection("profile")}
+                    className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-left transition ${
+                      settingsSection === "profile"
+                        ? isDarkResolved
+                          ? "bg-indigo-950/70 text-indigo-300"
+                          : "bg-indigo-50/80 text-indigo-600"
+                        : isDarkResolved
+                        ? "hover:bg-slate-800/70"
+                        : "hover:bg-slate-50"
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <User className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                      <div>
+                        <p className="text-sm font-semibold">Profile</p>
+                        <p className="text-xs text-slate-400">
+                          Name, email, photo
+                        </p>
+                      </div>
+                    </div>
+                    {settingsSection === "profile" ? (
+                      <ChevronDown className="w-4 h-4 text-slate-400" />
+                    ) : (
+                      <ChevronRight className="w-4 h-4 text-slate-400" />
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => setSettingsSection("storage")}
+                    className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-left transition ${
+                      settingsSection === "storage"
+                        ? isDarkResolved
+                          ? "bg-indigo-950/70 text-indigo-300"
+                          : "bg-indigo-50/80 text-indigo-600"
+                        : isDarkResolved
+                        ? "hover:bg-slate-800/70"
+                        : "hover:bg-slate-50"
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <HardDrive className="w-4 h-4 mt-0.5 text-emerald-500 flex-shrink-0" />
+                      <div>
+                        <p className="text-sm font-semibold">Storage</p>
+                        <p className="text-xs text-slate-400">
+                          {formatBytes(totalBytesUsed)} of 100 MB used
+                        </p>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-400" />
+                  </button>
+
+                  <button
+                    onClick={() => setSettingsSection("ai")}
+                    className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-left transition ${
+                      settingsSection === "ai"
+                        ? isDarkResolved
+                          ? "bg-indigo-950/70 text-indigo-300"
+                          : "bg-indigo-50/80 text-indigo-600"
+                        : isDarkResolved
+                        ? "hover:bg-slate-800/70"
+                        : "hover:bg-slate-50"
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <Sparkles className="w-4 h-4 mt-0.5 text-purple-500 flex-shrink-0" />
+                      <div>
+                        <p className="text-sm font-semibold">AI Preferences</p>
+                        <p className="text-xs text-slate-400">
+                          Gemini &amp; Pinecone retrieval
+                        </p>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-400" />
+                  </button>
+
+                  <button
+                    onClick={() => setSettingsSection("theme")}
+                    className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-left transition ${
+                      settingsSection === "theme"
+                        ? isDarkResolved
+                          ? "bg-indigo-950/70 text-indigo-300"
+                          : "bg-indigo-50/80 text-indigo-600"
+                        : isDarkResolved
+                        ? "hover:bg-slate-800/70"
+                        : "hover:bg-slate-50"
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <Palette className="w-4 h-4 mt-0.5 text-pink-500 flex-shrink-0" />
+                      <div>
+                        <p className="text-sm font-semibold">Theme</p>
+                        <p className="text-xs text-slate-400">
+                          Light, dark, system
+                        </p>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-400" />
+                  </button>
+                </div>
+
+                {/* Right Settings Detail Panel */}
+                <div
+                  className={`lg:col-span-8 border rounded-2xl p-6 shadow-xs space-y-8 ${
+                    isDarkResolved
+                      ? "bg-slate-900 border-slate-800"
+                      : "bg-white border-slate-200/80"
+                  }`}
+                >
+                  {settingsSection === "profile" && (
+                    <form onSubmit={handleSaveProfile} className="space-y-5">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-lg font-bold">Profile Settings</h3>
+                        {profileSavedNotice && (
+                          <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full">
+                            <Check className="w-3.5 h-3.5" />
+                            Saved
+                          </span>
+                        )}
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-500 mb-1.5">
+                          Full Name
+                        </label>
+                        <input
+                          type="text"
+                          value={draftName}
+                          onChange={(e) => setDraftName(e.target.value)}
+                          className={`w-full border rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
+                            isDarkResolved
+                              ? "bg-slate-800 border-slate-700 text-slate-100"
+                              : "bg-white border-slate-200 text-slate-900"
+                          }`}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-500 mb-1.5">
+                          Email
+                        </label>
+                        <input
+                          type="email"
+                          value={draftEmail}
+                          onChange={(e) => setDraftEmail(e.target.value)}
+                          className={`w-full border rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
+                            isDarkResolved
+                              ? "bg-slate-800 border-slate-700 text-slate-100"
+                              : "bg-white border-slate-200 text-slate-900"
+                          }`}
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-4 pt-1">
+                        <div className="w-12 h-12 rounded-full bg-indigo-600 text-white font-semibold text-sm flex items-center justify-center overflow-hidden">
+                          {draftPhoto ? (
+                            <img
+                              src={draftPhoto}
+                              alt={draftName}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            getInitials(draftName)
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => avatarInputRef.current?.click()}
+                          className={`px-4 py-2 text-xs font-semibold border rounded-xl transition ${
+                            isDarkResolved
+                              ? "border-slate-700 text-slate-200 hover:bg-slate-800"
+                              : "border-slate-200 text-slate-700 hover:bg-slate-50"
+                          }`}
+                        >
+                          Change Photo
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-3 pt-2">
+                        <button
+                          type="submit"
+                          className="px-4 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-xs transition"
+                        >
+                          Save Changes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleCancelProfile}
+                          className={`px-4 py-2.5 text-sm font-medium border rounded-xl transition ${
+                            isDarkResolved
+                              ? "border-slate-700 text-slate-300 hover:bg-slate-800"
+                              : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                          }`}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  )}
+
+                  {settingsSection === "storage" && (
+                    <div className="space-y-4">
+                      <h3 className="text-lg font-bold">Storage Overview</h3>
+                      <p className="text-sm text-slate-500">
+                        Files are stored in your Supabase Storage bucket and
+                        indexed in Pinecone.
+                      </p>
+                      <div className="flex items-center justify-between text-sm font-medium">
+                        <span>Used Space</span>
+                        <span>
+                          {formatBytes(totalBytesUsed)} / 100 MB (
+                          {storagePercent}%)
+                        </span>
+                      </div>
+                      <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-indigo-600 rounded-full"
+                          style={{ width: `${Math.max(4, storagePercent)}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {settingsSection === "ai" && (
+                    <div className="space-y-4">
+                      <h3 className="text-lg font-bold">AI Preferences</h3>
+                      <p className="text-sm text-slate-500">
+                        Semantic search retrieves top matching chunks from
+                        Pinecone and generates answers using Gemini.
+                      </p>
+                      <div className="text-sm space-y-2">
+                        <p>
+                          <span className="font-semibold">Vector Index:</span>{" "}
+                          Pinecone (`{files.length}` indexed documents)
+                        </p>
+                        <p>
+                          <span className="font-semibold">Backend API:</span>{" "}
+                          {API_BASE}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {settingsSection === "theme" && (
+                    <div className="space-y-5">
+                      <div>
+                        <h3 className="text-lg font-bold">Appearance &amp; Theme</h3>
+                        <p className="text-sm text-slate-500 mt-0.5">
+                          Choose Light, Dark, or match your system preference.
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        {(
+                          [
+                            {
+                              id: "light",
+                              label: "Light",
+                              desc: "Clean bright surface",
+                              Icon: Sun,
+                            },
+                            {
+                              id: "dark",
+                              label: "Dark",
+                              desc: "Low-glare dark mode",
+                              Icon: Moon,
+                            },
+                            {
+                              id: "system",
+                              label: "System",
+                              desc: "Follow OS setting",
+                              Icon: Monitor,
+                            },
+                          ] as const
+                        ).map(({ id, label, desc, Icon }) => {
+                          const selected = themeMode === id;
+                          return (
+                            <button
+                              key={id}
+                              type="button"
+                              onClick={() => setThemeMode(id)}
+                              className={`p-4 rounded-xl border text-left transition ${
+                                selected
+                                  ? "border-indigo-600 ring-2 ring-indigo-500/30 bg-indigo-50/40 dark:bg-indigo-950/40"
+                                  : isDarkResolved
+                                  ? "border-slate-800 hover:border-slate-700"
+                                  : "border-slate-200 hover:border-slate-300"
+                              }`}
+                            >
+                              <div className="flex items-center justify-between mb-2">
+                                <Icon className="w-4 h-4 text-indigo-600" />
+                                {selected && (
+                                  <Check className="w-4 h-4 text-indigo-600" />
+                                )}
+                              </div>
+                              <p className="text-sm font-semibold">{label}</p>
+                              <p className="text-xs text-slate-400 mt-0.5">
+                                {desc}
+                              </p>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Quick Theme Switch Bar always visible on Settings right card */}
+                  <div
+                    className={`pt-5 border-t flex flex-wrap items-center justify-between gap-4 ${
+                      isDarkResolved ? "border-slate-800" : "border-slate-100"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Palette className="w-4 h-4 text-pink-500" />
+                      <div>
+                        <p className="text-sm font-semibold">Theme Switch</p>
+                        <p className="text-xs text-slate-400">
+                          Current: <span className="capitalize">{themeMode}</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div
+                      className={`inline-flex p-1 rounded-xl border ${
+                        isDarkResolved
+                          ? "bg-slate-800 border-slate-700"
+                          : "bg-slate-100 border-slate-200/80"
+                      }`}
+                    >
+                      {(["light", "dark", "system"] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => setThemeMode(mode)}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition ${
+                            themeMode === mode
+                              ? "bg-indigo-600 text-white shadow-2xs"
+                              : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                          }`}
+                        >
+                          {mode}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </main>

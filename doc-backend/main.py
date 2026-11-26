@@ -10,6 +10,7 @@ from pydantic import BaseModel
 import PyPDF2
 from pinecone import Pinecone
 from supabase import create_client, Client
+from google import genai
 
 load_dotenv()
 
@@ -26,21 +27,24 @@ app.add_middleware(
 # --- Configuration ---
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "brain-ai-1024")
-PINECONE_NAMESPACE = "default"
+PINECONE_NAMESPACE = os.getenv("PINECONE_NAMESPACE", "default")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "docubrain-files")
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not PINECONE_API_KEY or not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
     raise RuntimeError(
         "Missing required environment variables: PINECONE_API_KEY, SUPABASE_URL, or SUPABASE_SERVICE_KEY"
     )
 
-# Initialize Pinecone & Supabase clients
+# Initialize Pinecone, Supabase, and Gemini clients
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(PINECONE_INDEX_NAME)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 
 class QueryRequest(BaseModel):
@@ -68,7 +72,11 @@ def chunk_text(text: str, chunk_size: int = 400, overlap: int = 50) -> List[str]
 
 @app.get("/")
 async def health_check():
-    return {"status": "ok", "service": "DocuBrain AI Backend"}
+    return {
+        "status": "ok",
+        "service": "DocuBrain AI Backend",
+        "rag_enabled": bool(gemini_client),
+    }
 
 
 @app.post("/api/upload")
@@ -96,7 +104,7 @@ async def upload_file(file: UploadFile = File(...)):
                 "status": "already_exists",
             }
 
-        # 2. Upload to Supabase Storage with upsert="true" so re-uploads overwrite instead of failing/duplicating
+        # 2. Upload to Supabase Storage with upsert="true"
         supabase.storage.from_(SUPABASE_BUCKET).upload(
             path=storage_path,
             file=file_bytes,
@@ -112,7 +120,7 @@ async def upload_file(file: UploadFile = File(...)):
         else:
             extracted_text = file_bytes.decode("utf-8", errors="ignore")
 
-        # 4. Chunk and upsert documents in batches of 50 (deterministic _ids overwrite cleanly)
+        # 4. Chunk and upsert documents in batches of 50 (Pinecone embeds chunk_text automatically)
         chunks = chunk_text(extracted_text)
         if chunks:
             documents = [
@@ -147,14 +155,14 @@ async def search_files(request: QueryRequest):
                 namespace=PINECONE_NAMESPACE,
                 query={
                     "inputs": {"text": request.query},
-                    "top_k": 10,
+                    "top_k": 8,
                 },
                 fields=["file_id", "filename", "chunk_text"],
             )
         except TypeError:
             results = index.documents.search(
                 namespace=PINECONE_NAMESPACE,
-                top_k=10,
+                top_k=8,
                 score_by=[
                     {
                         "type": "embed",
@@ -167,6 +175,7 @@ async def search_files(request: QueryRequest):
 
         matched_files = []
         seen_keys = set()
+        context_blocks = []
 
         res_dict = (
             results.to_dict()
@@ -195,7 +204,13 @@ async def search_files(request: QueryRequest):
 
             fid = fields.get("file_id")
             fname = fields.get("filename", "Unknown")
-            # Deduplicate by both file_id and filename
+            chunk_content = str(fields.get("chunk_text", "")).strip()
+
+            # Keep top 5 chunks for LLM context synthesis
+            if chunk_content and len(context_blocks) < 5:
+                context_blocks.append(f"\n{chunk_content}")
+
+            # Deduplicate matched files list by both file_id and filename
             dedup_key = (fid, fname)
             if fid and dedup_key not in seen_keys and fname not in seen_keys:
                 seen_keys.add(dedup_key)
@@ -204,12 +219,29 @@ async def search_files(request: QueryRequest):
                     {
                         "id": fid,
                         "name": fname,
-                        "relevanceSnippet": str(fields.get("chunk_text", ""))[:140] + "...",
+                        "relevanceSnippet": chunk_content[:140] + "...",
                     }
                 )
 
         if not matched_files:
             answer = f"I searched your files for '{request.query}', but found no matching topics."
+        elif gemini_client and context_blocks:
+            joined_context = "\n\n---\n\n".join(context_blocks)
+            prompt = (
+                "You are DocuBrain AI, a helpful document assistant. Answer the user's question "
+                "using ONLY the provided document excerpts below. Cite the source filename(s) when "
+                "referencing information. If the excerpts do not contain the answer, say so clearly.\n\n"
+                f"User Question: {request.query}\n\n"
+                f"Document Excerpts:\n{joined_context}"
+            )
+            llm_response = gemini_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+            )
+            answer = (
+                llm_response.text
+                or f"Found {len(matched_files)} matching document(s)."
+            )
         else:
             answer = f"I scanned your indexed files and found {len(matched_files)} document(s) matching your request:"
 

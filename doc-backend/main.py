@@ -2,6 +2,7 @@ import os
 import io
 import uuid
 from typing import List
+import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,7 +10,6 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 import PyPDF2
 from pinecone import Pinecone
-from sentence_transformers import SentenceTransformer
 from supabase import create_client, Client
 
 # Automatically loads variables from doc-backend/.env locally
@@ -33,22 +33,38 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "docubrain-files")
 
-if not PINECONE_API_KEY or not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+HF_TOKEN = os.getenv("HF_TOKEN")
+HF_API_URL = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
+
+if not PINECONE_API_KEY or not SUPABASE_URL or not SUPABASE_SERVICE_KEY or not HF_TOKEN:
     raise RuntimeError(
-        "Missing required environment variables: PINECONE_API_KEY, SUPABASE_URL, or SUPABASE_SERVICE_KEY"
+        "Missing required environment variables: PINECONE_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY, or HF_TOKEN"
     )
 
-# Initialize clients
+# Initialize Pinecone & Supabase clients
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(PINECONE_INDEX_NAME)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-# Load embedding model
-model = SentenceTransformer("all-MiniLM-L6-v2")
-
 
 class QueryRequest(BaseModel):
     query: str
+
+
+def get_embeddings(texts: List[str]) -> List[List[float]]:
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    response = requests.post(
+        HF_API_URL,
+        headers=headers,
+        json={"inputs": texts, "options": {"wait_for_model": True}},
+        timeout=60,
+    )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Hugging Face embedding error: {response.text}",
+        )
+    return response.json()
 
 
 def extract_text_from_pdf_bytes(file_bytes: bytes) -> str:
@@ -104,7 +120,7 @@ async def upload_file(file: UploadFile = File(...)):
     # 3. Chunk and upsert vectors + storage_path metadata to Pinecone
     chunks = chunk_text(extracted_text)
     if chunks:
-        embeddings = model.encode(chunks).tolist()
+        embeddings = get_embeddings(chunks)
         vectors_to_upsert = []
         for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
             vectors_to_upsert.append(
@@ -126,7 +142,7 @@ async def upload_file(file: UploadFile = File(...)):
 
 @app.post("/api/search")
 async def search_files(request: QueryRequest):
-    query_embedding = model.encode(request.query).tolist()
+    query_embedding = get_embeddings([request.query])[0]
 
     results = index.query(
         vector=query_embedding,

@@ -2,27 +2,34 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import {
-  FolderOpen,
-  MessageSquare,
+  LayoutDashboard,
+  Files,
+  Heart,
+  Sparkles,
+  Upload,
+  Search,
   FileText,
   Download,
   Trash2,
-  UploadCloud,
   Send,
   Bot,
   User,
   Loader2,
   ArrowUpDown,
-  LayoutGrid,
-  List,
-  Search,
+  Clock,
+  Folder,
+  HardDrive,
+  CheckCircle2,
+  TrendingUp,
+  ArrowRight,
   RefreshCw,
-  Star,
 } from "lucide-react";
 
 const API_BASE = (
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 ).replace(/\/$/, "");
+
+const FREE_STORAGE_LIMIT_BYTES = 100 * 1024 * 1024; // 100 MB
 
 interface StoredDoc {
   id: string;
@@ -46,32 +53,74 @@ interface Message {
 }
 
 type SortOption = "newest" | "oldest" | "name" | "size";
-type ActiveTab = "chat" | "drive" | "favourites";
+type ActiveTab = "dashboard" | "drive" | "favourites" | "chat";
 
 function formatBytes(bytes: number): string {
-  if (!bytes || bytes <= 0) return "—";
+  if (!bytes || bytes <= 0) return "0.0 MB";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function formatDate(iso: string): string {
+function formatShortDate(iso: string): string {
   if (!iso) return "—";
   const parsed = new Date(iso);
   if (isNaN(parsed.getTime())) return "—";
-  return parsed.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
+  return parsed.toISOString().split("T")[0];
+}
+
+function inferCategory(filename: string, ext: string): {
+  label: string;
+  badgeClass: string;
+} {
+  const lower = filename.toLowerCase();
+  if (
+    lower.includes("note") ||
+    lower.includes("lecture") ||
+    lower.includes("sem") ||
+    lower.includes("project") ||
+    lower.includes("lab") ||
+    lower.includes("report")
+  ) {
+    return { label: "Academic", badgeClass: "bg-indigo-50 text-indigo-600" };
+  }
+  if (
+    lower.includes("offer") ||
+    lower.includes("resume") ||
+    lower.includes("cv") ||
+    lower.includes("intern") ||
+    lower.includes("work")
+  ) {
+    return { label: "Work", badgeClass: "bg-purple-50 text-purple-600" };
+  }
+  if (
+    lower.includes("invoice") ||
+    lower.includes("bill") ||
+    lower.includes("tax") ||
+    lower.includes("bank") ||
+    ext === "csv"
+  ) {
+    return { label: "Finance", badgeClass: "bg-emerald-50 text-emerald-600" };
+  }
+  if (
+    lower.includes("ticket") ||
+    lower.includes("flight") ||
+    lower.includes("hotel") ||
+    lower.includes("passport")
+  ) {
+    return { label: "Personal", badgeClass: "bg-amber-50 text-amber-600" };
+  }
+  return {
+    label: ext ? ext.toUpperCase() : "Document",
+    badgeClass: "bg-blue-50 text-blue-600",
+  };
 }
 
 export default function Home() {
   // Navigation & View States
-  const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
-  const [viewMode, setViewMode] = useState<"list" | "grid">("list");
+  const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
   const [sortBy, setSortBy] = useState<SortOption>("newest");
-  const [driveFilter, setDriveFilter] = useState<string>("");
+  const [globalSearch, setGlobalSearch] = useState<string>("");
 
   // File Storage States
   const [files, setFiles] = useState<StoredDoc[]>([]);
@@ -85,7 +134,7 @@ export default function Home() {
     {
       role: "assistant",
       content:
-        "Hello! Upload documents to your cloud Drive, ask me questions about any topic, star important documents to save them to Favourites, or open My Drive to view all files.",
+        "Hello! Ask me anything about your uploaded documents, request summaries, or search by topic.",
     },
   ]);
   const [inputQuery, setInputQuery] = useState<string>("");
@@ -119,7 +168,6 @@ export default function Home() {
   }, [messages, isSearching]);
 
   const handleToggleFavorite = async (fileId: string) => {
-    // Optimistic UI update
     setFiles((prev) =>
       prev.map((f) =>
         f.id === fileId ? { ...f, isFavorite: !f.isFavorite } : f
@@ -139,13 +187,11 @@ export default function Home() {
         )
       );
     } catch {
-      // Revert if backend call failed
       setFiles((prev) =>
         prev.map((f) =>
           f.id === fileId ? { ...f, isFavorite: !f.isFavorite } : f
         )
       );
-      alert("Could not update favourite status. Please try again.");
     } finally {
       setTogglingFavId(null);
     }
@@ -182,9 +228,7 @@ export default function Home() {
   };
 
   const handleDeleteFile = async (fileId: string, fileName: string) => {
-    if (!confirm(`Delete "${fileName}" permanently from Drive and AI index?`)) {
-      return;
-    }
+    if (!confirm(`Delete "${fileName}" permanently?`)) return;
 
     setDeletingId(fileId);
     try {
@@ -194,26 +238,25 @@ export default function Home() {
       if (!res.ok) throw new Error("Delete failed");
       setFiles((prev) => prev.filter((f) => f.id !== fileId));
     } catch {
-      alert("Could not delete file. Please try again.");
+      alert("Could not delete file.");
     } finally {
       setDeletingId(null);
     }
   };
 
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!inputQuery.trim() || isSearching) return;
+  const runSearchQuery = async (queryText: string) => {
+    const trimmed = queryText.trim();
+    if (!trimmed || isSearching) return;
 
-    const query = inputQuery.trim();
-    setInputQuery("");
-    setMessages((prev) => [...prev, { role: "user", content: query }]);
+    setActiveTab("chat");
+    setMessages((prev) => [...prev, { role: "user", content: trimmed }]);
     setIsSearching(true);
 
     try {
       const res = await fetch(`${API_BASE}/api/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({ query: trimmed }),
       });
 
       if (!res.ok) {
@@ -224,7 +267,6 @@ export default function Home() {
       }
 
       const data = await res.json();
-
       setMessages((prev) => [
         ...prev,
         {
@@ -250,566 +292,865 @@ export default function Home() {
     }
   };
 
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inputQuery.trim()) return;
+    const q = inputQuery;
+    setInputQuery("");
+    await runSearchQuery(q);
+  };
+
+  const handleTopSearchSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!globalSearch.trim()) return;
+    const q = globalSearch;
+    setGlobalSearch("");
+    await runSearchQuery(q);
+  };
+
+  // --- Computed Dashboard Metrics ---
+  const totalBytesUsed = files.reduce(
+    (sum, f) => sum + (Number(f.sizeBytes) || 0),
+    0
+  );
+  const storagePercent = Math.min(
+    100,
+    Math.round((totalBytesUsed / FREE_STORAGE_LIMIT_BYTES) * 100)
+  );
   const favouriteCount = files.filter((f) => f.isFavorite).length;
 
-  const displayedFiles = files
-    .filter((f) => (activeTab === "favourites" ? Boolean(f.isFavorite) : true))
-    .filter((f) => f.name.toLowerCase().includes(driveFilter.toLowerCase()));
+  const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const uploadedThisWeek = files.filter((f) => {
+    const t = new Date(f.uploadedAt).getTime();
+    return !isNaN(t) && t >= oneWeekAgo;
+  }).length;
 
-  const isFileSpaceTab = activeTab === "drive" || activeTab === "favourites";
+  // Group documents into categories for the "Top Categories" widget
+  const categoryCountsMap: Record<string, number> = {};
+  files.forEach((f) => {
+    const { label } = inferCategory(f.name, f.type);
+    categoryCountsMap[label] = (categoryCountsMap[label] || 0) + 1;
+  });
+  const topCategories = Object.entries(categoryCountsMap)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5);
+  const activeCategoriesCount = Object.keys(categoryCountsMap).length;
+
+  const recentFiles = [...files]
+    .sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))
+    .slice(0, 5);
+
+  const displayedListFiles = files
+    .filter((f) => (activeTab === "favourites" ? Boolean(f.isFavorite) : true))
+    .filter((f) =>
+      f.name.toLowerCase().includes(globalSearch.toLowerCase())
+    );
+
+  const todayFormatted = new Date().toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+
+  const tabTitleMap: Record<ActiveTab, string> = {
+    dashboard: "Dashboard",
+    drive: "All Documents",
+    favourites: "Favorites",
+    chat: "AI Search",
+  };
 
   return (
-    <div className="flex h-screen bg-gray-50 text-gray-900 font-sans">
+    <div className="flex h-screen bg-[#F8F9FC] text-slate-900 font-sans">
+      {/* Hidden File Input */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleUpload}
+        className="hidden"
+        accept=".pdf,.docx,.txt,.md,.csv,.py,.js,.ts,.json"
+      />
+
       {/* LEFT SIDEBAR */}
-      <aside className="w-68 bg-white border-r border-gray-200 p-5 flex flex-col shadow-sm">
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold tracking-tight text-blue-600">
-            DocuBrain AI
-          </h1>
-          <p className="text-xs text-gray-500 mt-0.5">
-            Cloud Drive & Semantic Search
-          </p>
+      <aside className="w-64 bg-white border-r border-slate-200/80 flex flex-col justify-between p-4">
+        <div>
+          {/* Brand Logo */}
+          <div className="flex items-center gap-3 px-2 py-2 mb-6">
+            <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-sm">
+              <Sparkles className="w-5 h-5" />
+            </div>
+            <div>
+              <h1 className="font-bold text-base leading-tight text-slate-900">
+                DocuBrain
+              </h1>
+              <span className="text-[11px] font-semibold tracking-wider text-indigo-600 uppercase">
+                AI
+              </span>
+            </div>
+          </div>
+
+          {/* Navigation Items */}
+          <nav className="space-y-1">
+            <button
+              onClick={() => setActiveTab("dashboard")}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
+                activeTab === "dashboard"
+                  ? "bg-indigo-50 text-indigo-600"
+                  : "text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              <LayoutDashboard className="w-4 h-4" />
+              <span>Dashboard</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setActiveTab("drive");
+                loadFiles(sortBy);
+              }}
+              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
+                activeTab === "drive"
+                  ? "bg-indigo-50 text-indigo-600"
+                  : "text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              <span className="flex items-center gap-3">
+                <Files className="w-4 h-4" />
+                <span>All Documents</span>
+              </span>
+              <span className="text-xs font-semibold bg-indigo-100/70 text-indigo-600 px-2 py-0.5 rounded-full">
+                {files.length}
+              </span>
+            </button>
+
+            <button
+              onClick={() => {
+                setActiveTab("favourites");
+                loadFiles(sortBy);
+              }}
+              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
+                activeTab === "favourites"
+                  ? "bg-indigo-50 text-indigo-600"
+                  : "text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              <span className="flex items-center gap-3">
+                <Heart
+                  className={`w-4 h-4 ${
+                    activeTab === "favourites"
+                      ? "fill-rose-500 text-rose-500"
+                      : ""
+                  }`}
+                />
+                <span>Favorites</span>
+              </span>
+              <span className="text-xs font-semibold bg-indigo-100/70 text-indigo-600 px-2 py-0.5 rounded-full">
+                {favouriteCount}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab("chat")}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
+                activeTab === "chat"
+                  ? "bg-indigo-50 text-indigo-600"
+                  : "text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              <Search className="w-4 h-4" />
+              <span>AI Search</span>
+            </button>
+
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isUploading}
+              className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-50 transition"
+            >
+              {isUploading ? (
+                <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+              ) : (
+                <Upload className="w-4 h-4" />
+              )}
+              <span>{isUploading ? "Uploading..." : "Upload / Import"}</span>
+            </button>
+          </nav>
         </div>
 
-        <input
-          type="file"
-          ref={fileInputRef}
-          onChange={handleUpload}
-          className="hidden"
-          accept=".pdf,.docx,.txt,.md,.csv,.py,.js,.ts,.json"
-        />
-
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          disabled={isUploading}
-          className="w-full mb-6 py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2 shadow-sm transition"
-        >
-          {isUploading ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin" />
-              <span>Indexing File...</span>
-            </>
-          ) : (
-            <>
-              <UploadCloud className="w-4 h-4" />
-              <span>+ Upload File</span>
-            </>
-          )}
-        </button>
-
-        {/* TAB NAVIGATION */}
-        <nav className="space-y-1.5 flex-1">
-          <button
-            onClick={() => setActiveTab("chat")}
-            className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg text-sm font-medium transition ${
-              activeTab === "chat"
-                ? "bg-blue-50 text-blue-700"
-                : "text-gray-600 hover:bg-gray-100"
-            }`}
-          >
-            <MessageSquare className="w-4 h-4" />
-            AI Search Chat
-          </button>
-
-          <button
-            onClick={() => {
-              setActiveTab("drive");
-              loadFiles(sortBy);
-            }}
-            className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition ${
-              activeTab === "drive"
-                ? "bg-blue-50 text-blue-700"
-                : "text-gray-600 hover:bg-gray-100"
-            }`}
-          >
-            <span className="flex items-center gap-2.5">
-              <FolderOpen className="w-4 h-4" />
-              My Drive
+        {/* Bottom Storage Widget */}
+        <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4">
+          <div className="flex items-center justify-between text-xs mb-2">
+            <span className="text-slate-500 font-medium">Storage Used</span>
+            <span className="font-semibold text-slate-700">
+              {formatBytes(totalBytesUsed)} / 100 MB
             </span>
-            <span className="text-xs bg-white border border-gray-200 text-gray-700 px-2 py-0.5 rounded-full">
-              {files.length}
-            </span>
-          </button>
-
-          <button
-            onClick={() => {
-              setActiveTab("favourites");
-              loadFiles(sortBy);
-            }}
-            className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition ${
-              activeTab === "favourites"
-                ? "bg-amber-50 text-amber-700"
-                : "text-gray-600 hover:bg-gray-100"
-            }`}
-          >
-            <span className="flex items-center gap-2.5">
-              <Star
-                className={`w-4 h-4 ${
-                  activeTab === "favourites"
-                    ? "fill-amber-400 text-amber-500"
-                    : ""
-                }`}
-              />
-              Favourites
-            </span>
-            <span className="text-xs bg-white border border-gray-200 text-gray-700 px-2 py-0.5 rounded-full">
-              {favouriteCount}
-            </span>
-          </button>
-        </nav>
-
-        <div className="pt-4 border-t border-gray-100 text-xs text-gray-400">
-          Synced with Supabase & Pinecone
+          </div>
+          <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-indigo-600 rounded-full transition-all duration-300"
+              style={{ width: `${Math.max(4, storagePercent)}%` }}
+            />
+          </div>
         </div>
       </aside>
 
-      {/* MAIN CONTENT AREA */}
-      <main className="flex-1 flex flex-col overflow-hidden">
-        {isFileSpaceTab ? (
-          /* ================= MY DRIVE & FAVOURITES VIEW ================= */
-          <div className="flex-1 flex flex-col overflow-hidden">
-            <header className="h-16 bg-white border-b border-gray-200 px-6 flex items-center justify-between gap-4">
-              <div className="flex items-center gap-2.5">
-                {activeTab === "favourites" ? (
-                  <Star className="w-5 h-5 fill-amber-400 text-amber-500" />
-                ) : (
-                  <FolderOpen className="w-5 h-5 text-blue-600" />
-                )}
-                <h2 className="font-semibold text-lg">
-                  {activeTab === "favourites"
-                    ? `Favourite Files (${displayedFiles.length})`
-                    : `All Uploaded Files (${displayedFiles.length})`}
-                </h2>
-              </div>
+      {/* RIGHT MAIN SHELL */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* TOP HEADER BAR */}
+        <header className="h-16 bg-white border-b border-slate-200/80 px-8 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-6 flex-1">
+            <span className="font-semibold text-slate-800 text-sm">
+              {tabTitleMap[activeTab]}
+            </span>
 
-              <div className="flex items-center gap-3">
-                {/* Filename Search Filter */}
-                <div className="relative w-60">
-                  <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    value={driveFilter}
-                    onChange={(e) => setDriveFilter(e.target.value)}
-                    placeholder="Filter by filename..."
-                    className="w-full bg-gray-100 rounded-lg pl-9 pr-3 py-1.5 text-sm outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition"
-                  />
+            <form
+              onSubmit={handleTopSearchSubmit}
+              className="relative w-full max-w-sm"
+            >
+              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={globalSearch}
+                onChange={(e) => setGlobalSearch(e.target.value)}
+                placeholder="Search documents..."
+                className="w-full bg-slate-100/80 border border-transparent focus:border-indigo-300 focus:bg-white rounded-xl pl-10 pr-4 py-2 text-sm outline-none transition"
+              />
+            </form>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setActiveTab("chat")}
+              className="flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-xl transition"
+            >
+              <Sparkles className="w-4 h-4" />
+              <span>AI Search</span>
+            </button>
+
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isUploading}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 rounded-xl shadow-sm transition"
+            >
+              {isUploading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Upload className="w-4 h-4" />
+              )}
+              <span>{isUploading ? "Indexing..." : "Upload"}</span>
+            </button>
+          </div>
+        </header>
+
+        {/* TAB VIEWPORT */}
+        <main className="flex-1 overflow-y-auto">
+          {activeTab === "dashboard" && (
+            /* ================= DASHBOARD VIEW ================= */
+            <div className="p-8 max-w-7xl mx-auto space-y-6">
+              {/* Welcome Header */}
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-2xl font-bold text-slate-900">
+                    Dashboard
+                  </h2>
+                  <p className="text-sm text-slate-500 mt-0.5">
+                    Welcome back · {todayFormatted}
+                  </p>
                 </div>
 
-                {/* Sort Selector */}
-                <div className="flex items-center gap-1.5 text-sm">
-                  <ArrowUpDown className="w-4 h-4 text-gray-400" />
-                  <select
-                    value={sortBy}
-                    onChange={(e) => setSortBy(e.target.value as SortOption)}
-                    className="border border-gray-200 rounded-lg px-3 py-1.5 bg-white text-gray-700 outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="newest">Newest First</option>
-                    <option value="oldest">Oldest First</option>
-                    <option value="name">Name (A – Z)</option>
-                    <option value="size">Size (Largest)</option>
-                  </select>
-                </div>
-
-                {/* Refresh Button */}
                 <button
-                  onClick={() => loadFiles(sortBy)}
-                  title="Refresh files"
-                  className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg transition"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploading}
+                  className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-sm transition"
                 >
-                  <RefreshCw
-                    className={`w-4 h-4 ${isLoadingFiles ? "animate-spin" : ""}`}
-                  />
+                  <Upload className="w-4 h-4" />
+                  <span>Upload Documents</span>
                 </button>
+              </div>
 
-                {/* List / Grid Toggle */}
-                <div className="flex border border-gray-200 rounded-lg overflow-hidden">
-                  <button
-                    onClick={() => setViewMode("list")}
-                    title="List view"
-                    className={`p-2 ${
-                      viewMode === "list"
-                        ? "bg-blue-50 text-blue-600"
-                        : "bg-white text-gray-500 hover:bg-gray-50"
-                    }`}
-                  >
-                    <List className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => setViewMode("grid")}
-                    title="Grid view"
-                    className={`p-2 ${
-                      viewMode === "grid"
-                        ? "bg-blue-50 text-blue-600"
-                        : "bg-white text-gray-500 hover:bg-gray-50"
-                    }`}
-                  >
-                    <LayoutGrid className="w-4 h-4" />
-                  </button>
+              {/* 4 KPI STAT CARDS */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+                {/* Total Documents */}
+                <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs flex items-start justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-slate-500">
+                      Total Documents
+                    </p>
+                    <p className="text-3xl font-bold text-slate-900 mt-2">
+                      {files.length}
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      across all categories
+                    </p>
+                    <p className="text-xs font-medium text-emerald-600 mt-3">
+                      +{uploadedThisWeek} this week
+                    </p>
+                  </div>
+                  <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                    <Files className="w-5 h-5" />
+                  </div>
+                </div>
+
+                {/* Documents Analyzed */}
+                <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs flex items-start justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-slate-500">
+                      Docs Analyzed
+                    </p>
+                    <p className="text-3xl font-bold text-slate-900 mt-2">
+                      {files.length}
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      100% success rate
+                    </p>
+                    <p className="text-xs font-medium text-emerald-600 mt-3">
+                      +{files.length} indexed in Pinecone
+                    </p>
+                  </div>
+                  <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                    <Sparkles className="w-5 h-5" />
+                  </div>
+                </div>
+
+                {/* Categories */}
+                <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs flex items-start justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-slate-500">
+                      Categories
+                    </p>
+                    <p className="text-3xl font-bold text-slate-900 mt-2">
+                      {activeCategoriesCount}
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      active categories
+                    </p>
+                  </div>
+                  <div className="w-10 h-10 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center">
+                    <Folder className="w-5 h-5" />
+                  </div>
+                </div>
+
+                {/* Storage Used */}
+                <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs flex items-start justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-slate-500">
+                      Storage Used
+                    </p>
+                    <p className="text-3xl font-bold text-slate-900 mt-2">
+                      {formatBytes(totalBytesUsed)}
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      of 100 MB free
+                    </p>
+                  </div>
+                  <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+                    <HardDrive className="w-5 h-5" />
+                  </div>
                 </div>
               </div>
-            </header>
 
-            <div className="flex-1 overflow-y-auto p-6">
-              {isLoadingFiles ? (
-                <div className="flex items-center justify-center h-48 text-gray-500 gap-2">
-                  <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
-                  <span>Loading files...</span>
-                </div>
-              ) : displayedFiles.length === 0 ? (
-                <div className="text-center py-16 bg-white border border-dashed border-gray-300 rounded-xl">
-                  {activeTab === "favourites" ? (
-                    <>
-                      <Star className="w-10 h-10 text-gray-300 mx-auto mb-2" />
-                      <p className="text-gray-600 font-medium">
-                        No favourite files yet
+              {/* BOTTOM 2-COLUMN SECTION: RECENT DOCUMENTS + ANALYTICS */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Recent Documents (2/3 width) */}
+                <div className="lg:col-span-2 bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-slate-500" />
+                      <h3 className="font-semibold text-slate-900">
+                        Recent Documents
+                      </h3>
+                    </div>
+                    <button
+                      onClick={() => setActiveTab("drive")}
+                      className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
+                    >
+                      <span>View all</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {isLoadingFiles ? (
+                    <div className="flex items-center justify-center h-44 text-slate-400 gap-2 text-sm">
+                      <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+                      <span>Loading recent documents...</span>
+                    </div>
+                  ) : recentFiles.length === 0 ? (
+                    <div className="text-center py-12 border border-dashed border-slate-200 rounded-xl">
+                      <p className="text-sm font-medium text-slate-600">
+                        No documents uploaded yet
                       </p>
-                      <p className="text-xs text-gray-400 mt-1">
-                        Click the star icon on any document in My Drive or AI
-                        Search to pin it here.
+                      <p className="text-xs text-slate-400 mt-1">
+                        Click &quot;Upload Documents&quot; to get started.
                       </p>
-                    </>
+                    </div>
                   ) : (
-                    <>
-                      <FolderOpen className="w-10 h-10 text-gray-300 mx-auto mb-2" />
-                      <p className="text-gray-600 font-medium">
-                        No files found
-                      </p>
-                      <p className="text-xs text-gray-400 mt-1">
-                        Click &quot;+ Upload File&quot; in the sidebar to add
-                        documents.
-                      </p>
-                    </>
-                  )}
-                </div>
-              ) : viewMode === "list" ? (
-                <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
-                  <table className="w-full text-left text-sm">
-                    <thead className="bg-gray-50 border-b border-gray-200 text-xs uppercase text-gray-500">
-                      <tr>
-                        <th className="py-3 px-4 w-12">#</th>
-                        <th className="py-3 px-4 w-12 text-center">Fav</th>
-                        <th className="py-3 px-4">File Name</th>
-                        <th className="py-3 px-4">Type</th>
-                        <th className="py-3 px-4">Size</th>
-                        <th className="py-3 px-4">Uploaded Date</th>
-                        <th className="py-3 px-4 text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100">
-                      {displayedFiles.map((doc, index) => (
-                        <tr
-                          key={doc.id}
-                          className="hover:bg-gray-50 transition"
-                        >
-                          <td className="py-3 px-4 text-gray-400 font-mono text-xs">
-                            {index + 1}
-                          </td>
-                          <td className="py-3 px-4 text-center">
+                    <div className="space-y-3">
+                      {recentFiles.map((doc) => {
+                        const cat = inferCategory(doc.name, doc.type);
+                        return (
+                          <div
+                            key={doc.id}
+                            className="flex items-center justify-between gap-4 p-3.5 rounded-xl border border-slate-100 hover:border-slate-200 hover:bg-slate-50/60 transition"
+                          >
+                            {/* File Icon & Name */}
+                            <div className="flex items-center gap-3.5 min-w-0 flex-1">
+                              <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
+                                <FileText className="w-5 h-5" />
+                              </div>
+                              <div className="min-w-0">
+                                <a
+                                  href={`${API_BASE}/api/download/${doc.id}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="font-semibold text-sm text-slate-800 hover:text-indigo-600 truncate block"
+                                >
+                                  {doc.name}
+                                </a>
+                                <p className="text-xs text-slate-400 truncate mt-0.5">
+                                  {doc.type.toUpperCase()} · ID {doc.id.slice(0, 8)}
+                                </p>
+                              </div>
+                            </div>
+
+                            {/* Category Badge */}
+                            <span
+                              className={`hidden sm:inline-block text-xs font-medium px-2.5 py-1 rounded-full ${cat.badgeClass}`}
+                            >
+                              {cat.label}
+                            </span>
+
+                            {/* Date & Size */}
+                            <div className="hidden md:block text-right text-xs">
+                              <p className="text-slate-600 font-medium">
+                                {formatShortDate(doc.uploadedAt)}
+                              </p>
+                              <p className="text-slate-400 mt-0.5">
+                                {formatBytes(doc.sizeBytes)}
+                              </p>
+                            </div>
+
+                            {/* Analyzed Status Pill */}
+                            <span className="hidden sm:inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600">
+                              <CheckCircle2 className="w-3 h-3" />
+                              Analyzed
+                            </span>
+
+                            {/* Favourite Heart */}
                             <button
                               onClick={() => handleToggleFavorite(doc.id)}
                               disabled={togglingFavId === doc.id}
                               title={
                                 doc.isFavorite
-                                  ? "Remove from Favourites"
-                                  : "Add to Favourites"
+                                  ? "Remove from Favorites"
+                                  : "Add to Favorites"
                               }
-                              className="p-1 rounded-md hover:bg-amber-50 transition"
+                              className="p-1.5 rounded-lg hover:bg-rose-50 transition"
                             >
-                              <Star
+                              <Heart
                                 className={`w-4 h-4 ${
                                   doc.isFavorite
-                                    ? "fill-amber-400 text-amber-500"
-                                    : "text-gray-300 hover:text-amber-400"
+                                    ? "fill-rose-500 text-rose-500"
+                                    : "text-slate-300 hover:text-rose-400"
                                 }`}
                               />
                             </button>
-                          </td>
-                          <td className="py-3 px-4 font-medium flex items-center gap-2.5">
-                            <FileText className="w-4 h-4 text-blue-600 flex-shrink-0" />
-                            <span className="truncate max-w-md">{doc.name}</span>
-                          </td>
-                          <td className="py-3 px-4 uppercase text-xs text-gray-500">
-                            {doc.type}
-                          </td>
-                          <td className="py-3 px-4 text-gray-500">
-                            {formatBytes(doc.sizeBytes)}
-                          </td>
-                          <td className="py-3 px-4 text-gray-500">
-                            {formatDate(doc.uploadedAt)}
-                          </td>
-                          <td className="py-3 px-4 text-right">
-                            <div className="inline-flex items-center gap-1.5">
-                              <a
-                                href={`${API_BASE}/api/download/${doc.id}`}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-md transition"
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Right Side Analytics Stack (1/3 width) */}
+                <div className="space-y-6">
+                  {/* AI Analysis Breakdown Card */}
+                  <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs">
+                    <div className="flex items-center gap-2 mb-5">
+                      <Sparkles className="w-4 h-4 text-indigo-600" />
+                      <h3 className="font-semibold text-slate-900">
+                        AI Analysis
+                      </h3>
+                    </div>
+
+                    <div className="space-y-4 text-sm">
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-slate-600">Analyzed</span>
+                          <span className="font-semibold text-emerald-600">
+                            {files.length}
+                          </span>
+                        </div>
+                        <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-emerald-500 rounded-full"
+                            style={{ width: files.length > 0 ? "100%" : "0%" }}
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-slate-600">Analyzing</span>
+                          <span className="font-semibold text-amber-500">
+                            {isUploading ? 1 : 0}
+                          </span>
+                        </div>
+                        <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-amber-400 rounded-full"
+                            style={{ width: isUploading ? "40%" : "0%" }}
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-slate-600">Pending</span>
+                          <span className="font-semibold text-slate-400">0</span>
+                        </div>
+                        <div className="w-full h-2 bg-slate-100 rounded-full" />
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-slate-600">Errors</span>
+                          <span className="font-semibold text-rose-500">0</span>
+                        </div>
+                        <div className="w-full h-2 bg-slate-100 rounded-full" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Top Categories Card */}
+                  <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs">
+                    <div className="flex items-center gap-2 mb-4">
+                      <TrendingUp className="w-4 h-4 text-indigo-600" />
+                      <h3 className="font-semibold text-slate-900">
+                        Top Categories
+                      </h3>
+                    </div>
+
+                    {topCategories.length === 0 ? (
+                      <p className="text-xs text-slate-400">
+                        Upload files to see category distribution.
+                      </p>
+                    ) : (
+                      <div className="space-y-3 text-sm">
+                        {topCategories.map(([catName, count]) => (
+                          <div
+                            key={catName}
+                            className="flex items-center justify-between py-1"
+                          >
+                            <span className="text-slate-700 font-medium">
+                              {catName}
+                            </span>
+                            <span className="text-xs text-slate-400 font-medium">
+                              {count} {count === 1 ? "doc" : "docs"}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {(activeTab === "drive" || activeTab === "favourites") && (
+            /* ================= ALL DOCUMENTS & FAVORITES VIEW ================= */
+            <div className="p-8 max-w-7xl mx-auto">
+              <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-2xl font-bold text-slate-900">
+                    {activeTab === "favourites"
+                      ? `Favorites (${displayedListFiles.length})`
+                      : `All Documents (${displayedListFiles.length})`}
+                  </h2>
+                  <p className="text-sm text-slate-500 mt-0.5">
+                    {activeTab === "favourites"
+                      ? "Your starred documents pinned for quick access"
+                      : "All uploaded and indexed files in your cloud storage"}
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-1.5 text-sm">
+                    <ArrowUpDown className="w-4 h-4 text-slate-400" />
+                    <select
+                      value={sortBy}
+                      onChange={(e) => setSortBy(e.target.value as SortOption)}
+                      className="border border-slate-200 rounded-xl px-3 py-2 bg-white text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value="newest">Newest First</option>
+                      <option value="oldest">Oldest First</option>
+                      <option value="name">Name (A – Z)</option>
+                      <option value="size">Size (Largest)</option>
+                    </select>
+                  </div>
+
+                  <button
+                    onClick={() => loadFiles(sortBy)}
+                    title="Refresh"
+                    className="p-2.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl transition"
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 ${isLoadingFiles ? "animate-spin" : ""}`}
+                    />
+                  </button>
+                </div>
+              </div>
+
+              {isLoadingFiles ? (
+                <div className="flex items-center justify-center h-48 text-slate-500 gap-2">
+                  <Loader2 className="w-5 h-5 animate-spin text-indigo-600" />
+                  <span>Loading documents...</span>
+                </div>
+              ) : displayedListFiles.length === 0 ? (
+                <div className="text-center py-16 bg-white border border-dashed border-slate-300 rounded-2xl">
+                  <p className="text-slate-600 font-medium">
+                    {activeTab === "favourites"
+                      ? "No favorite documents yet"
+                      : "No documents found"}
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1">
+                    {activeTab === "favourites"
+                      ? "Click the heart icon next to any document to save it here."
+                      : "Upload a document using the button in the top bar."}
+                  </p>
+                </div>
+              ) : (
+                <div className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-xs">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-slate-50 border-b border-slate-200/80 text-xs uppercase text-slate-500">
+                      <tr>
+                        <th className="py-3.5 px-4 w-12">#</th>
+                        <th className="py-3.5 px-4">Document</th>
+                        <th className="py-3.5 px-4">Category</th>
+                        <th className="py-3.5 px-4">Uploaded</th>
+                        <th className="py-3.5 px-4">Size</th>
+                        <th className="py-3.5 px-4">Status</th>
+                        <th className="py-3.5 px-4 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {displayedListFiles.map((doc, idx) => {
+                        const cat = inferCategory(doc.name, doc.type);
+                        return (
+                          <tr
+                            key={doc.id}
+                            className="hover:bg-slate-50/70 transition"
+                          >
+                            <td className="py-3.5 px-4 text-slate-400 font-mono text-xs">
+                              {idx + 1}
+                            </td>
+                            <td className="py-3.5 px-4 font-medium flex items-center gap-3">
+                              <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
+                                <FileText className="w-4 h-4" />
+                              </div>
+                              <span className="truncate max-w-md text-slate-800">
+                                {doc.name}
+                              </span>
+                            </td>
+                            <td className="py-3.5 px-4">
+                              <span
+                                className={`text-xs font-medium px-2.5 py-1 rounded-full ${cat.badgeClass}`}
                               >
-                                <Download className="w-3.5 h-3.5" />
-                                Open
-                              </a>
-                              <button
-                                onClick={() =>
-                                  handleDeleteFile(doc.id, doc.name)
-                                }
-                                disabled={deletingId === doc.id}
-                                title="Delete file"
-                                className="p-1.5 text-gray-500 hover:bg-red-50 hover:text-red-600 rounded-md transition disabled:opacity-50"
-                              >
-                                {deletingId === doc.id ? (
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                  <Trash2 className="w-4 h-4" />
-                                )}
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
+                                {cat.label}
+                              </span>
+                            </td>
+                            <td className="py-3.5 px-4 text-slate-500 text-xs">
+                              {formatShortDate(doc.uploadedAt)}
+                            </td>
+                            <td className="py-3.5 px-4 text-slate-500 text-xs">
+                              {formatBytes(doc.sizeBytes)}
+                            </td>
+                            <td className="py-3.5 px-4">
+                              <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600">
+                                <CheckCircle2 className="w-3 h-3" />
+                                Analyzed
+                              </span>
+                            </td>
+                            <td className="py-3.5 px-4 text-right">
+                              <div className="inline-flex items-center gap-1.5">
+                                <button
+                                  onClick={() => handleToggleFavorite(doc.id)}
+                                  disabled={togglingFavId === doc.id}
+                                  title="Favorite"
+                                  className="p-1.5 rounded-lg hover:bg-rose-50 transition"
+                                >
+                                  <Heart
+                                    className={`w-4 h-4 ${
+                                      doc.isFavorite
+                                        ? "fill-rose-500 text-rose-500"
+                                        : "text-slate-300 hover:text-rose-400"
+                                    }`}
+                                  />
+                                </button>
+                                <a
+                                  href={`${API_BASE}/api/download/${doc.id}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition"
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                  Open
+                                </a>
+                                <button
+                                  onClick={() =>
+                                    handleDeleteFile(doc.id, doc.name)
+                                  }
+                                  disabled={deletingId === doc.id}
+                                  title="Delete"
+                                  className="p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 rounded-lg transition"
+                                >
+                                  {deletingId === doc.id ? (
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                  ) : (
+                                    <Trash2 className="w-4 h-4" />
+                                  )}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                  {displayedFiles.map((doc) => (
-                    <div
-                      key={doc.id}
-                      className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-md transition flex flex-col justify-between"
-                    >
-                      <div>
-                        <div className="flex items-start justify-between mb-3">
-                          <div className="p-2.5 bg-blue-50 text-blue-600 rounded-lg">
-                            <FileText className="w-6 h-6" />
-                          </div>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              onClick={() => handleToggleFavorite(doc.id)}
-                              disabled={togglingFavId === doc.id}
-                              title={
-                                doc.isFavorite
-                                  ? "Remove from Favourites"
-                                  : "Add to Favourites"
-                              }
-                              className="p-1.5 rounded-md hover:bg-amber-50 transition"
-                            >
-                              <Star
-                                className={`w-4 h-4 ${
-                                  doc.isFavorite
-                                    ? "fill-amber-400 text-amber-500"
-                                    : "text-gray-300 hover:text-amber-400"
-                                }`}
-                              />
-                            </button>
-                            <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-gray-100 text-gray-600">
-                              {doc.type}
-                            </span>
-                          </div>
-                        </div>
-                        <p
-                          className="font-medium text-sm text-gray-900 line-clamp-2"
-                          title={doc.name}
-                        >
-                          {doc.name}
-                        </p>
-                      </div>
-
-                      <div className="mt-4 pt-3 border-t border-gray-100 flex items-center justify-between text-xs text-gray-400">
-                        <span>{formatBytes(doc.sizeBytes)}</span>
-                        <div className="flex items-center gap-1">
-                          <a
-                            href={`${API_BASE}/api/download/${doc.id}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            title="Download"
-                            className="p-1.5 text-gray-600 hover:bg-blue-50 hover:text-blue-600 rounded-md transition"
-                          >
-                            <Download className="w-4 h-4" />
-                          </a>
-                          <button
-                            onClick={() => handleDeleteFile(doc.id, doc.name)}
-                            disabled={deletingId === doc.id}
-                            title="Delete"
-                            className="p-1.5 text-gray-600 hover:bg-red-50 hover:text-red-600 rounded-md transition disabled:opacity-50"
-                          >
-                            {deletingId === doc.id ? (
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                            ) : (
-                              <Trash2 className="w-4 h-4" />
-                            )}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
               )}
             </div>
-          </div>
-        ) : (
-          /* ================= AI CHAT VIEW ================= */
-          <div className="flex-1 flex flex-col overflow-hidden">
-            <header className="h-16 bg-white border-b border-gray-200 px-6 flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <Bot className="w-6 h-6 text-blue-600" />
-                <h2 className="font-semibold text-lg">AI Document Search</h2>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    setActiveTab("favourites");
-                    loadFiles(sortBy);
-                  }}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-lg transition"
-                >
-                  <Star className="w-4 h-4 fill-amber-400 text-amber-500" />
-                  <span>Favourites ({favouriteCount})</span>
-                </button>
-                <button
-                  onClick={() => {
-                    setActiveTab("drive");
-                    loadFiles(sortBy);
-                  }}
-                  className="flex items-center gap-2 px-3.5 py-1.5 text-sm font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition"
-                >
-                  <FolderOpen className="w-4 h-4" />
-                  <span>View All Files ({files.length})</span>
-                </button>
-              </div>
-            </header>
+          )}
 
-            <div className="flex-1 p-6 overflow-y-auto space-y-4">
-              {messages.map((msg, idx) => (
-                <div
-                  key={idx}
-                  className={`flex ${
-                    msg.role === "user" ? "justify-end" : "justify-start"
-                  }`}
-                >
+          {activeTab === "chat" && (
+            /* ================= AI SEARCH CHAT VIEW ================= */
+            <div className="flex flex-col h-full">
+              <div className="flex-1 p-6 overflow-y-auto space-y-4 max-w-4xl w-full mx-auto">
+                {messages.map((msg, idx) => (
                   <div
-                    className={`flex gap-3 max-w-[80%] ${
-                      msg.role === "user" ? "flex-row-reverse" : ""
+                    key={idx}
+                    className={`flex ${
+                      msg.role === "user" ? "justify-end" : "justify-start"
                     }`}
                   >
                     <div
-                      className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
-                        msg.role === "user"
-                          ? "bg-blue-600 text-white"
-                          : "bg-gray-200 text-gray-700"
+                      className={`flex gap-3 max-w-[82%] ${
+                        msg.role === "user" ? "flex-row-reverse" : ""
                       }`}
                     >
-                      {msg.role === "user" ? (
-                        <User className="w-4 h-4" />
-                      ) : (
-                        <Bot className="w-4 h-4" />
-                      )}
-                    </div>
-                    <div
-                      className={`p-4 rounded-2xl text-sm ${
-                        msg.role === "user"
-                          ? "bg-blue-600 text-white rounded-tr-none"
-                          : "bg-white border border-gray-200 text-gray-800 shadow-sm rounded-tl-none"
-                      }`}
-                    >
-                      <p className="whitespace-pre-wrap leading-relaxed">
-                        {msg.content}
-                      </p>
+                      <div
+                        className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
+                          msg.role === "user"
+                            ? "bg-indigo-600 text-white"
+                            : "bg-slate-200 text-slate-700"
+                        }`}
+                      >
+                        {msg.role === "user" ? (
+                          <User className="w-4 h-4" />
+                        ) : (
+                          <Bot className="w-4 h-4" />
+                        )}
+                      </div>
+                      <div
+                        className={`p-4 rounded-2xl text-sm ${
+                          msg.role === "user"
+                            ? "bg-indigo-600 text-white rounded-tr-none"
+                            : "bg-white border border-slate-200/80 text-slate-800 shadow-xs rounded-tl-none"
+                        }`}
+                      >
+                        <p className="whitespace-pre-wrap leading-relaxed">
+                          {msg.content}
+                        </p>
 
-                      {msg.matchedFiles && msg.matchedFiles.length > 0 && (
-                        <div className="mt-3 pt-3 border-t border-gray-100 space-y-2">
-                          <p className="text-xs font-bold text-gray-500 uppercase">
-                            Matching Files:
-                          </p>
-                          {msg.matchedFiles.map((f) => {
-                            const storedMatch = files.find(
-                              (item) => item.id === f.id
-                            );
-                            const isFav = Boolean(storedMatch?.isFavorite);
-                            return (
-                              <div
-                                key={f.id}
-                                className="bg-blue-50 border border-blue-100 rounded-lg p-2.5 text-xs flex items-center justify-between gap-3"
-                              >
-                                <div className="min-w-0 flex-1">
-                                  <p className="font-semibold text-blue-900 truncate">
-                                    {f.name}
-                                  </p>
-                                  {f.relevanceSnippet && (
-                                    <p className="text-gray-600 italic line-clamp-1 mt-0.5">
-                                      &quot;{f.relevanceSnippet}&quot;
+                        {msg.matchedFiles && msg.matchedFiles.length > 0 && (
+                          <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+                            <p className="text-xs font-bold text-slate-500 uppercase">
+                              Matching Documents:
+                            </p>
+                            {msg.matchedFiles.map((f) => {
+                              const storedMatch = files.find(
+                                (item) => item.id === f.id
+                              );
+                              const isFav = Boolean(storedMatch?.isFavorite);
+                              return (
+                                <div
+                                  key={f.id}
+                                  className="bg-indigo-50/70 border border-indigo-100 rounded-xl p-2.5 text-xs flex items-center justify-between gap-3"
+                                >
+                                  <div className="min-w-0 flex-1">
+                                    <p className="font-semibold text-indigo-950 truncate">
+                                      {f.name}
                                     </p>
-                                  )}
+                                    {f.relevanceSnippet && (
+                                      <p className="text-slate-600 italic line-clamp-1 mt-0.5">
+                                        &quot;{f.relevanceSnippet}&quot;
+                                      </p>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                                    <button
+                                      onClick={() => handleToggleFavorite(f.id)}
+                                      className="p-1.5 bg-white border border-indigo-100 rounded-lg hover:bg-rose-50 transition"
+                                    >
+                                      <Heart
+                                        className={`w-3.5 h-3.5 ${
+                                          isFav
+                                            ? "fill-rose-500 text-rose-500"
+                                            : "text-slate-400"
+                                        }`}
+                                      />
+                                    </button>
+                                    <a
+                                      href={`${API_BASE}/api/download/${f.id}`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="p-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+                                    >
+                                      <Download className="w-3.5 h-3.5" />
+                                    </a>
+                                  </div>
                                 </div>
-                                <div className="flex items-center gap-1.5 flex-shrink-0">
-                                  <button
-                                    onClick={() => handleToggleFavorite(f.id)}
-                                    title={
-                                      isFav
-                                        ? "Remove from Favourites"
-                                        : "Add to Favourites"
-                                    }
-                                    className="p-1.5 bg-white border border-blue-100 rounded hover:bg-amber-50 transition"
-                                  >
-                                    <Star
-                                      className={`w-3.5 h-3.5 ${
-                                        isFav
-                                          ? "fill-amber-400 text-amber-500"
-                                          : "text-gray-400"
-                                      }`}
-                                    />
-                                  </button>
-                                  <a
-                                    href={`${API_BASE}/api/download/${f.id}`}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    title="Download file"
-                                    className="p-1.5 bg-blue-600 text-white rounded hover:bg-blue-700"
-                                  >
-                                    <Download className="w-3.5 h-3.5" />
-                                  </a>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                ))}
 
-              {isSearching && (
-                <div className="flex items-center text-gray-400 text-sm gap-2">
-                  <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
-                  <span>Scanning documents and generating answer...</span>
-                </div>
-              )}
-              <div ref={chatEndRef} />
-            </div>
-
-            <form
-              onSubmit={handleSendMessage}
-              className="p-4 bg-white border-t border-gray-200"
-            >
-              <div className="max-w-4xl mx-auto relative flex items-center">
-                <input
-                  type="text"
-                  value={inputQuery}
-                  onChange={(e) => setInputQuery(e.target.value)}
-                  placeholder="Ask about topics, summarize a document, or find a file..."
-                  className="w-full bg-gray-100 rounded-full pl-5 pr-12 py-3 text-sm outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 transition"
-                />
-                <button
-                  type="submit"
-                  disabled={isSearching || !inputQuery.trim()}
-                  className="absolute right-2 p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 disabled:opacity-50 transition"
-                >
-                  <Send className="w-4 h-4" />
-                </button>
+                {isSearching && (
+                  <div className="flex items-center text-slate-400 text-sm gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+                    <span>Searching documents and generating answer...</span>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
               </div>
-            </form>
-          </div>
-        )}
-      </main>
+
+              <form
+                onSubmit={handleSendMessage}
+                className="p-4 bg-white border-t border-slate-200/80"
+              >
+                <div className="max-w-4xl mx-auto relative flex items-center">
+                  <input
+                    type="text"
+                    value={inputQuery}
+                    onChange={(e) => setInputQuery(e.target.value)}
+                    placeholder="Ask about topics, summarize a document, or find a file..."
+                    className="w-full bg-slate-100 rounded-full pl-5 pr-12 py-3 text-sm outline-none focus:bg-white focus:ring-2 focus:ring-indigo-500 transition"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isSearching || !inputQuery.trim()}
+                    className="absolute right-2 p-2 bg-indigo-600 text-white rounded-full hover:bg-indigo-700 disabled:opacity-50 transition"
+                  >
+                    <Send className="w-4 h-4" />
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+        </main>
+      </div>
     </div>
   );
 }

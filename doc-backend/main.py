@@ -88,6 +88,17 @@ async def upload_file(file: UploadFile = File(...)):
         file_id = hashlib.sha256(file_bytes).hexdigest()[:32]
         storage_path = f"{file_id}/{filename}"
 
+        # 1. Always ensure the raw file exists in Supabase Storage (upsert overwrites cleanly)
+        supabase.storage.from_(SUPABASE_BUCKET).upload(
+            path=storage_path,
+            file=file_bytes,
+            file_options={
+                "content-type": file.content_type or "application/octet-stream",
+                "upsert": "true",
+            },
+        )
+
+        # 2. Check if this exact file is already indexed in Pinecone
         existing = index.documents.fetch(
             namespace=PINECONE_NAMESPACE,
             ids=[f"{file_id}_chunk_0"],
@@ -102,15 +113,7 @@ async def upload_file(file: UploadFile = File(...)):
                 "status": "already_exists",
             }
 
-        supabase.storage.from_(SUPABASE_BUCKET).upload(
-            path=storage_path,
-            file=file_bytes,
-            file_options={
-                "content-type": file.content_type or "application/octet-stream",
-                "upsert": "true",
-            },
-        )
-
+        # 3. Extract text and index in Pinecone if not already present
         if filename.lower().endswith(".pdf"):
             extracted_text = extract_text_from_pdf_bytes(file_bytes)
         else:
@@ -141,7 +144,6 @@ async def upload_file(file: UploadFile = File(...)):
     except Exception as e:
         print(f"UPLOAD ERROR: {e}")
         raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
-
 
 @app.post("/api/search")
 async def search_files(request: QueryRequest):

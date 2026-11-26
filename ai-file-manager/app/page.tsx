@@ -30,6 +30,8 @@ import {
   ChevronRight,
   ChevronDown,
   Check,
+  LogIn,
+  LogOut,
 } from "lucide-react";
 
 const API_BASE = (
@@ -39,6 +41,7 @@ const API_BASE = (
 const FREE_STORAGE_LIMIT_BYTES = 100 * 1024 * 1024; // 100 MB
 const PROFILE_STORAGE_KEY = "docubrain_profile_v1";
 const THEME_STORAGE_KEY = "docubrain_theme_v1";
+const AUTH_SESSION_KEY = "docubrain_auth_session_v1";
 
 interface StoredDoc {
   id: string;
@@ -68,7 +71,13 @@ interface UserProfile {
 }
 
 type SortOption = "newest" | "oldest" | "name" | "size";
-type ActiveTab = "dashboard" | "drive" | "favourites" | "chat" | "settings";
+type ActiveTab =
+  | "dashboard"
+  | "drive"
+  | "favourites"
+  | "chat"
+  | "settings"
+  | "login";
 type SettingsSection = "profile" | "storage" | "ai" | "theme";
 type ThemeMode = "light" | "dark" | "system";
 
@@ -99,7 +108,21 @@ function getInitials(name: string): string {
   return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
 }
 
-function inferCategory(filename: string, ext: string): {
+function formatNameFromEmail(email: string): string {
+  const localPart = email.split("@")[0] || "User";
+  return (
+    localPart
+      .replace(/[._-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/\b\w/g, (ch) => ch.toUpperCase()) || "User"
+  );
+}
+
+function inferCategory(
+  filename: string,
+  ext: string
+): {
   label: string;
   badgeClass: string;
 } {
@@ -158,7 +181,7 @@ export default function Home() {
   const [uploadedThisWeek, setUploadedThisWeek] = useState<number>(0);
   const [todayFormatted, setTodayFormatted] = useState<string>("Overview");
 
-  // Profile & Theme States
+  // Profile, Auth & Theme States
   const [profile, setProfile] = useState<UserProfile>(DEFAULT_PROFILE);
   const [draftName, setDraftName] = useState<string>(DEFAULT_PROFILE.fullName);
   const [draftEmail, setDraftEmail] = useState<string>(DEFAULT_PROFILE.email);
@@ -166,6 +189,12 @@ export default function Home() {
     DEFAULT_PROFILE.photoDataUrl
   );
   const [profileSavedNotice, setProfileSavedNotice] = useState<boolean>(false);
+
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(false);
+  const [loginName, setLoginName] = useState<string>("");
+  const [loginEmail, setLoginEmail] = useState<string>("");
+  const [loginPassword, setLoginPassword] = useState<string>("");
+  const [loginNotice, setLoginNotice] = useState<string>("");
 
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [isDarkResolved, setIsDarkResolved] = useState<boolean>(false);
@@ -192,7 +221,7 @@ export default function Home() {
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // Load saved profile & theme on client mount
+  // Load saved profile, auth status & theme on client mount
   useEffect(() => {
     try {
       const savedProfileRaw = localStorage.getItem(PROFILE_STORAGE_KEY);
@@ -207,6 +236,20 @@ export default function Home() {
         setDraftName(merged.fullName);
         setDraftEmail(merged.email);
         setDraftPhoto(merged.photoDataUrl);
+      }
+
+      const savedSessionRaw = localStorage.getItem(AUTH_SESSION_KEY);
+      if (savedSessionRaw) {
+        const parsedSession = JSON.parse(savedSessionRaw) as {
+          isLoggedIn?: boolean;
+          email?: string;
+        };
+        if (parsedSession.isLoggedIn) {
+          setIsLoggedIn(true);
+          if (parsedSession.email) {
+            setLoginEmail(parsedSession.email);
+          }
+        }
       }
 
       const savedTheme = localStorage.getItem(
@@ -329,6 +372,54 @@ export default function Home() {
     setDraftEmail(profile.email);
     setDraftPhoto(profile.photoDataUrl);
     setProfileSavedNotice(false);
+  };
+
+  const handleLoginSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanEmail = loginEmail.trim() || profile.email;
+    const resolvedName = loginName.trim() || formatNameFromEmail(cleanEmail);
+
+    const updatedProfile: UserProfile = {
+      fullName: resolvedName,
+      email: cleanEmail,
+      photoDataUrl: profile.photoDataUrl,
+    };
+
+    setProfile(updatedProfile);
+    setDraftName(updatedProfile.fullName);
+    setDraftEmail(updatedProfile.email);
+    setIsLoggedIn(true);
+    setLoginPassword("");
+    setLoginNotice(`Signed in as ${updatedProfile.fullName}`);
+
+    try {
+      localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(updatedProfile));
+      localStorage.setItem(
+        AUTH_SESSION_KEY,
+        JSON.stringify({ isLoggedIn: true, email: cleanEmail })
+      );
+    } catch {
+      // Ignore storage write errors
+    }
+
+    setTimeout(() => {
+      setLoginNotice("");
+      setActiveTab("dashboard");
+    }, 600);
+  };
+
+  const handleLogout = () => {
+    setIsLoggedIn(false);
+    setLoginPassword("");
+    setLoginNotice("Signed out of current session.");
+    try {
+      localStorage.setItem(
+        AUTH_SESSION_KEY,
+        JSON.stringify({ isLoggedIn: false, email: profile.email })
+      );
+    } catch {
+      // Ignore storage write errors
+    }
   };
 
   const handleToggleFavorite = async (fileId: string) => {
@@ -506,6 +597,7 @@ export default function Home() {
     favourites: "Favorites",
     chat: "AI Search",
     settings: "Settings",
+    login: "Login",
   };
 
   const firstName = profile.fullName.trim().split(/\s+/)[0] || "there";
@@ -685,6 +777,27 @@ export default function Home() {
               <Settings className="w-4 h-4" />
               <span>Settings</span>
             </button>
+
+            <button
+              onClick={() => setActiveTab("login")}
+              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
+                activeTab === "login"
+                  ? isDarkResolved
+                    ? "bg-indigo-950/80 text-indigo-300"
+                    : "bg-indigo-50 text-indigo-600"
+                  : isDarkResolved
+                  ? "text-slate-300 hover:bg-slate-800"
+                  : "text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              <span className="flex items-center gap-3">
+                <LogIn className="w-4 h-4" />
+                <span>{isLoggedIn ? "Switch Account" : "Login"}</span>
+              </span>
+              {isLoggedIn && (
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
+              )}
+            </button>
           </nav>
         </div>
 
@@ -792,7 +905,7 @@ export default function Home() {
                 setSettingsSection("profile");
                 setActiveTab("settings");
               }}
-              title={profile.fullName}
+              title={`${profile.fullName} (${profile.email})`}
               className="w-9 h-9 rounded-full bg-indigo-600 text-white text-xs font-semibold flex items-center justify-center overflow-hidden shadow-xs hover:ring-2 hover:ring-indigo-400 transition"
             >
               {profile.photoDataUrl ? (
@@ -1439,7 +1552,6 @@ export default function Home() {
           )}
 
           {activeTab === "settings" && (
-            /* ================= SETTINGS VIEW ================= */
             <div className="p-8 max-w-6xl mx-auto">
               <div className="mb-6">
                 <h2 className="text-2xl font-bold">Settings</h2>
@@ -1449,7 +1561,6 @@ export default function Home() {
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-                {/* Left Settings Menu Card */}
                 <div
                   className={`lg:col-span-4 border rounded-2xl p-2.5 shadow-xs space-y-1 ${
                     isDarkResolved
@@ -1558,7 +1669,6 @@ export default function Home() {
                   </button>
                 </div>
 
-                {/* Right Settings Detail Panel */}
                 <div
                   className={`lg:col-span-8 border rounded-2xl p-6 shadow-xs space-y-8 ${
                     isDarkResolved
@@ -1690,7 +1800,7 @@ export default function Home() {
                       <div className="text-sm space-y-2">
                         <p>
                           <span className="font-semibold">Vector Index:</span>{" "}
-                          Pinecone (`{files.length}` indexed documents)
+                          Pinecone ({files.length} indexed documents)
                         </p>
                         <p>
                           <span className="font-semibold">Backend API:</span>{" "}
@@ -1703,7 +1813,9 @@ export default function Home() {
                   {settingsSection === "theme" && (
                     <div className="space-y-5">
                       <div>
-                        <h3 className="text-lg font-bold">Appearance &amp; Theme</h3>
+                        <h3 className="text-lg font-bold">
+                          Appearance &amp; Theme
+                        </h3>
                         <p className="text-sm text-slate-500 mt-0.5">
                           Choose Light, Dark, or match your system preference.
                         </p>
@@ -1763,7 +1875,6 @@ export default function Home() {
                     </div>
                   )}
 
-                  {/* Quick Theme Switch Bar always visible on Settings right card */}
                   <div
                     className={`pt-5 border-t flex flex-wrap items-center justify-between gap-4 ${
                       isDarkResolved ? "border-slate-800" : "border-slate-100"
@@ -1803,6 +1914,154 @@ export default function Home() {
                     </div>
                   </div>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === "login" && (
+            <div className="p-8 max-w-xl mx-auto">
+              <div className="mb-6">
+                <h2 className="text-2xl font-bold">
+                  {isLoggedIn ? "Account & Switch User" : "Sign In"}
+                </h2>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  {isLoggedIn
+                    ? `Active account: ${profile.fullName} (${profile.email})`
+                    : "Sign in to switch users or access your workspace"}
+                </p>
+              </div>
+
+              <div
+                className={`border rounded-2xl p-6 shadow-xs space-y-5 ${
+                  isDarkResolved
+                    ? "bg-slate-900 border-slate-800"
+                    : "bg-white border-slate-200/80"
+                }`}
+              >
+                <div
+                  className={`p-3.5 rounded-xl border flex items-center justify-between ${
+                    isDarkResolved
+                      ? "bg-slate-800/70 border-slate-700"
+                      : "bg-slate-50 border-slate-200/70"
+                  }`}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-full bg-indigo-600 text-white text-xs font-semibold flex items-center justify-center flex-shrink-0 overflow-hidden">
+                      {profile.photoDataUrl ? (
+                        <img
+                          src={profile.photoDataUrl}
+                          alt={profile.fullName}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        getInitials(profile.fullName)
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold truncate">
+                        {profile.fullName}
+                      </p>
+                      <p className="text-xs text-slate-400 truncate">
+                        {profile.email}
+                      </p>
+                    </div>
+                  </div>
+
+                  <span
+                    className={`text-xs font-medium px-2.5 py-1 rounded-full flex-shrink-0 ${
+                      isLoggedIn
+                        ? "bg-emerald-50 text-emerald-600"
+                        : "bg-slate-200/80 text-slate-600"
+                    }`}
+                  >
+                    {isLoggedIn ? "Signed In" : "Guest"}
+                  </span>
+                </div>
+
+                {loginNotice && (
+                  <p className="text-xs font-medium text-emerald-600">
+                    {loginNotice}
+                  </p>
+                )}
+
+                <form onSubmit={handleLoginSubmit} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">
+                      Full Name (optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={loginName}
+                      onChange={(e) => setLoginName(e.target.value)}
+                      placeholder={profile.fullName}
+                      className={`w-full border rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
+                        isDarkResolved
+                          ? "bg-slate-800 border-slate-700 text-slate-100"
+                          : "bg-white border-slate-200 text-slate-900"
+                      }`}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">
+                      Email Address
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      value={loginEmail}
+                      onChange={(e) => setLoginEmail(e.target.value)}
+                      placeholder="user@example.com"
+                      className={`w-full border rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
+                        isDarkResolved
+                          ? "bg-slate-800 border-slate-700 text-slate-100"
+                          : "bg-white border-slate-200 text-slate-900"
+                      }`}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">
+                      Password
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      value={loginPassword}
+                      onChange={(e) => setLoginPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className={`w-full border rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
+                        isDarkResolved
+                          ? "bg-slate-800 border-slate-700 text-slate-100"
+                          : "bg-white border-slate-200 text-slate-900"
+                      }`}
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-3 pt-2">
+                    <button
+                      type="submit"
+                      className="px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-xs transition"
+                    >
+                      {isLoggedIn ? "Switch User" : "Sign In"}
+                    </button>
+
+                    {isLoggedIn && (
+                      <button
+                        type="button"
+                        onClick={handleLogout}
+                        className={`inline-flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border rounded-xl transition ${
+                          isDarkResolved
+                            ? "border-slate-700 text-slate-300 hover:bg-slate-800"
+                            : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                        }`}
+                      >
+                        <LogOut className="w-4 h-4" />
+                        <span>Sign Out</span>
+                      </button>
+                    )}
+                  </div>
+                </form>
               </div>
             </div>
           )}

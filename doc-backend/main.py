@@ -48,13 +48,18 @@ class QueryRequest(BaseModel):
 
 
 def get_embeddings(texts: List[str], input_type: str = "passage") -> List[List[float]]:
+    all_embeddings = []
+    batch_size = 96
     try:
-        res = pc.inference.embed(
-            model="multilingual-e5-large",
-            inputs=texts,
-            parameters={"input_type": input_type, "truncate": "END"},
-        )
-        return [item["values"] for item in res]
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            res = pc.inference.embed(
+                model="multilingual-e5-large",
+                inputs=batch,
+                parameters={"input_type": input_type, "truncate": "END"},
+            )
+            all_embeddings.extend([item["values"] for item in res])
+        return all_embeddings
     except Exception as e:
         raise HTTPException(
             status_code=502,
@@ -112,7 +117,7 @@ async def upload_file(file: UploadFile = File(...)):
     else:
         extracted_text = file_bytes.decode("utf-8", errors="ignore")
 
-    # 3. Chunk and upsert vectors + storage_path metadata to Pinecone
+    # 3. Chunk, embed in batches, and upsert vectors + storage_path metadata to Pinecone
     chunks = chunk_text(extracted_text)
     if chunks:
         embeddings = get_embeddings(chunks, input_type="passage")
@@ -130,7 +135,8 @@ async def upload_file(file: UploadFile = File(...)):
                     },
                 }
             )
-        index.upsert(vectors=vectors_to_upsert)
+        for i in range(0, len(vectors_to_upsert), 100):
+            index.upsert(vectors=vectors_to_upsert[i : i + 100])
 
     return {"file_id": file_id, "filename": filename, "status": "indexed"}
 

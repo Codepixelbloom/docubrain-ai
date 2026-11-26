@@ -104,11 +104,9 @@ def query_matches_filename(query: str, filename: str) -> bool:
     f_lower = filename.lower()
     f_stem = os.path.splitext(f_lower)[0]
 
-    # Direct substring match (e.g. "AntiraggingAffidavitForm" or "DS-Lab")
     if f_lower in q_lower or (len(f_stem) >= 4 and f_stem in q_lower):
         return True
 
-    # Token overlap match (e.g. user types "antiragging affidavit" or "bcs351 ds lab")
     q_tokens = normalize_tokens(q_lower)
     f_tokens = normalize_tokens(f_stem) - {"pdf", "docx", "txt", "doc", "file", "document"}
     if not f_tokens:
@@ -136,7 +134,6 @@ def is_summary_query(query: str) -> bool:
 
 
 def list_all_stored_files() -> List[dict]:
-    """Lists unique indexed files directly from Supabase Storage."""
     files = []
     try:
         folders = supabase.storage.from_(SUPABASE_BUCKET).list()
@@ -172,7 +169,6 @@ async def upload_file(file: UploadFile = File(...)):
         file_id = hashlib.sha256(file_bytes).hexdigest()[:32]
         storage_path = f"{file_id}/{filename}"
 
-        # 1. Extract clean text BEFORE storing/indexing
         lower_name = filename.lower()
         if lower_name.endswith(".pdf"):
             extracted_text = extract_text_from_pdf_bytes(file_bytes)
@@ -198,7 +194,6 @@ async def upload_file(file: UploadFile = File(...)):
                 detail="No readable text found in file (scanned image PDFs without OCR are not supported).",
             )
 
-        # 2. Ensure raw file exists in Supabase Storage
         supabase.storage.from_(SUPABASE_BUCKET).upload(
             path=storage_path,
             file=file_bytes,
@@ -208,7 +203,6 @@ async def upload_file(file: UploadFile = File(...)):
             },
         )
 
-        # 3. Chunk and upsert to Pinecone with filename embedded in chunk_text
         chunks = chunk_text(extracted_text)
         if chunks:
             documents = [
@@ -255,7 +249,6 @@ async def search_files(request: QueryRequest):
         context_blocks = []
         chunks_per_file = {}
 
-        # A. Direct fetch when the user searches or asks to summarize by filename
         if named_files:
             for nf in named_files:
                 fid = nf["id"]
@@ -301,7 +294,6 @@ async def search_files(request: QueryRequest):
                 except Exception as fetch_err:
                     print(f"DIRECT FETCH ERROR ({fname}): {fetch_err}")
 
-        # B. If user asked for a general summary across all documents without naming one
         if summary_mode and not named_files and stored_files:
             for sf in stored_files:
                 fid = sf["id"]
@@ -332,7 +324,7 @@ async def search_files(request: QueryRequest):
                             if not first_snippet:
                                 first_snippet = text
                             chunks_per_file[fname] = chunks_per_file.get(fname, 0) + 1
-                            context_blocks.append(f"\n{text[:1200]}")
+                            context_blocks.append(f"[Source: {fname}]\n{text[:1200]}")
 
                     if first_snippet and (fid, fname) not in seen_keys:
                         seen_keys.add((fid, fname))
@@ -347,7 +339,6 @@ async def search_files(request: QueryRequest):
                 except Exception as sum_err:
                     print(f"SUMMARY FETCH ERROR ({fname}): {sum_err}")
 
-        # C. Semantic vector search for topic-based queries (and additional context)
         if not named_files and not summary_mode:
             try:
                 results = index.documents.search(
@@ -413,9 +404,7 @@ async def search_files(request: QueryRequest):
                 file_count = chunks_per_file.get(fname, 0)
                 if chunk_content and file_count < 3 and len(context_blocks) < 10:
                     chunks_per_file[fname] = file_count + 1
-                    context_blocks.append(
-                        f"\n{chunk_content[:1200]}"
-                    )
+                    context_blocks.append(f"\n{chunk_content[:1200]}")
 
                 dedup_key = (fid, fname)
                 if fid and dedup_key not in seen_keys and fname not in seen_keys:
@@ -465,3 +454,72 @@ async def search_files(request: QueryRequest):
                         break
                 except Exception as llm_err:
                     print(f"GEMINI ERROR ({model_name}): {llm_err}")
+
+            if isinstance(parsed_result, dict):
+                answer = str(
+                    parsed_result.get("answer")
+                    or f"No documents were found covering '{request.query}'."
+                )
+                relevant_names = {
+                    str(name).strip().lower()
+                    for name in parsed_result.get("relevant_files", [])
+                }
+                matched_files = [
+                    f
+                    for f in candidate_files
+                    if f["name"].strip().lower() in relevant_names
+                ]
+                return {
+                    "answer": answer,
+                    "matched_files": matched_files,
+                }
+
+        return {
+            "answer": f"I scanned your indexed files and found {len(candidate_files)} document(s) matching your request:",
+            "matched_files": candidate_files,
+        }
+    except Exception as e:
+        print(f"SEARCH ERROR: {e}")
+        raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+
+
+@app.get("/api/download/{file_id}")
+async def download_file(file_id: str):
+    try:
+        res = index.documents.fetch(
+            namespace=PINECONE_NAMESPACE,
+            ids=[f"{file_id}_chunk_0"],
+        )
+        docs = getattr(res, "documents", None) or (
+            res.get("documents", {}) if isinstance(res, dict) else {}
+        )
+        chunk_data = docs.get(f"{file_id}_chunk_0")
+
+        if not chunk_data:
+            raise HTTPException(status_code=404, detail="File metadata not found")
+
+        fields = getattr(chunk_data, "fields", None) or (
+            chunk_data.get("fields", chunk_data)
+            if isinstance(chunk_data, dict)
+            else vars(chunk_data)
+        )
+        if not isinstance(fields, dict):
+            fields = dict(fields)
+
+        storage_path = fields.get("storage_path")
+        if not storage_path:
+            raise HTTPException(status_code=404, detail="Storage path missing")
+
+        signed = supabase.storage.from_(SUPABASE_BUCKET).create_signed_url(
+            storage_path, 600, {"download": True}
+        )
+        signed_url = signed.get("signedURL") or signed.get("signedUrl")
+        if not signed_url:
+            raise HTTPException(status_code=500, detail="Could not generate download URL")
+
+        return RedirectResponse(url=signed_url)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"DOWNLOAD ERROR: {e}")
+        raise HTTPException(status_code=500, detail=f"Download error: {str(e)}")

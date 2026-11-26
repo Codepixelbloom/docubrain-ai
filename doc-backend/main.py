@@ -33,7 +33,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "docubrain-files")
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip()
 
 if not PINECONE_API_KEY or not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
     raise RuntimeError(
@@ -85,11 +85,9 @@ async def upload_file(file: UploadFile = File(...)):
         filename = file.filename or "unknown.pdf"
         file_bytes = await file.read()
 
-        # Deterministic SHA-256 hash of file contents prevents duplicate storage & indexing
         file_id = hashlib.sha256(file_bytes).hexdigest()[:32]
         storage_path = f"{file_id}/{filename}"
 
-        # 1. Check if this exact file is already indexed in Pinecone
         existing = index.documents.fetch(
             namespace=PINECONE_NAMESPACE,
             ids=[f"{file_id}_chunk_0"],
@@ -104,7 +102,6 @@ async def upload_file(file: UploadFile = File(...)):
                 "status": "already_exists",
             }
 
-        # 2. Upload to Supabase Storage with upsert="true"
         supabase.storage.from_(SUPABASE_BUCKET).upload(
             path=storage_path,
             file=file_bytes,
@@ -114,13 +111,11 @@ async def upload_file(file: UploadFile = File(...)):
             },
         )
 
-        # 3. Extract text from memory
         if filename.lower().endswith(".pdf"):
             extracted_text = extract_text_from_pdf_bytes(file_bytes)
         else:
             extracted_text = file_bytes.decode("utf-8", errors="ignore")
 
-        # 4. Chunk and upsert documents in batches of 50 (Pinecone embeds chunk_text automatically)
         chunks = chunk_text(extracted_text)
         if chunks:
             documents = [
@@ -144,6 +139,7 @@ async def upload_file(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
+        print(f"UPLOAD ERROR: {e}")
         raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
 
@@ -206,11 +202,9 @@ async def search_files(request: QueryRequest):
             fname = fields.get("filename", "Unknown")
             chunk_content = str(fields.get("chunk_text", "")).strip()
 
-            # Keep top 5 chunks for LLM context synthesis
             if chunk_content and len(context_blocks) < 5:
                 context_blocks.append(f"\n{chunk_content}")
 
-            # Deduplicate matched files list by both file_id and filename
             dedup_key = (fid, fname)
             if fid and dedup_key not in seen_keys and fname not in seen_keys:
                 seen_keys.add(dedup_key)
@@ -234,14 +228,21 @@ async def search_files(request: QueryRequest):
                 f"User Question: {request.query}\n\n"
                 f"Document Excerpts:\n{joined_context}"
             )
-            llm_response = gemini_client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-            )
-            answer = (
-                llm_response.text
-                or f"Found {len(matched_files)} matching document(s)."
-            )
+            try:
+                llm_response = gemini_client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt,
+                )
+                answer = (
+                    llm_response.text
+                    or f"I scanned your indexed files and found {len(matched_files)} document(s) matching your request:"
+                )
+            except Exception as llm_err:
+                print(f"GEMINI ERROR: {llm_err}")
+                answer = (
+                    f"Found {len(matched_files)} matching document(s) "
+                    f"(AI summary unavailable: {str(llm_err)}):"
+                )
         else:
             answer = f"I scanned your indexed files and found {len(matched_files)} document(s) matching your request:"
 
@@ -250,6 +251,7 @@ async def search_files(request: QueryRequest):
             "matched_files": matched_files,
         }
     except Exception as e:
+        print(f"SEARCH ERROR: {e}")
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
 
@@ -291,4 +293,5 @@ async def download_file(file_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        print(f"DOWNLOAD ERROR: {e}")
         raise HTTPException(status_code=500, detail=f"Download error: {str(e)}")

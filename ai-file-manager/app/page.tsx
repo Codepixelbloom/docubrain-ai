@@ -17,10 +17,12 @@ import {
   List,
   Search,
   RefreshCw,
+  Star,
 } from "lucide-react";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = (
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
+).replace(/\/$/, "");
 
 interface StoredDoc {
   id: string;
@@ -28,6 +30,7 @@ interface StoredDoc {
   sizeBytes: number;
   uploadedAt: string;
   type: string;
+  isFavorite?: boolean;
 }
 
 interface MatchedFile {
@@ -43,6 +46,7 @@ interface Message {
 }
 
 type SortOption = "newest" | "oldest" | "name" | "size";
+type ActiveTab = "chat" | "drive" | "favourites";
 
 function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return "—";
@@ -64,7 +68,7 @@ function formatDate(iso: string): string {
 
 export default function Home() {
   // Navigation & View States
-  const [activeTab, setActiveTab] = useState<"chat" | "drive">("chat");
+  const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
   const [sortBy, setSortBy] = useState<SortOption>("newest");
   const [driveFilter, setDriveFilter] = useState<string>("");
@@ -74,13 +78,14 @@ export default function Home() {
   const [isLoadingFiles, setIsLoadingFiles] = useState<boolean>(true);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [togglingFavId, setTogglingFavId] = useState<string | null>(null);
 
   // Chat & Search States
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
       content:
-        "Hello! Upload documents to your cloud Drive, ask me questions about any topic, request a summary, or switch to My Drive to view all files in order.",
+        "Hello! Upload documents to your cloud Drive, ask me questions about any topic, star important documents to save them to Favourites, or open My Drive to view all files.",
     },
   ]);
   const [inputQuery, setInputQuery] = useState<string>("");
@@ -112,6 +117,39 @@ export default function Home() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isSearching]);
+
+  const handleToggleFavorite = async (fileId: string) => {
+    // Optimistic UI update
+    setFiles((prev) =>
+      prev.map((f) =>
+        f.id === fileId ? { ...f, isFavorite: !f.isFavorite } : f
+      )
+    );
+    setTogglingFavId(fileId);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/files/${fileId}/favourite`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error("Failed to update favourite");
+      const data = await res.json();
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === fileId ? { ...f, isFavorite: Boolean(data.isFavorite) } : f
+        )
+      );
+    } catch {
+      // Revert if backend call failed
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === fileId ? { ...f, isFavorite: !f.isFavorite } : f
+        )
+      );
+      alert("Could not update favourite status. Please try again.");
+    } finally {
+      setTogglingFavId(null);
+    }
+  };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -178,7 +216,13 @@ export default function Home() {
         body: JSON.stringify({ query }),
       });
 
-      if (!res.ok) throw new Error("Search request failed");
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(
+          errBody.detail || `Server responded with HTTP ${res.status}`
+        );
+      }
+
       const data = await res.json();
 
       setMessages((prev) => [
@@ -191,13 +235,14 @@ export default function Home() {
             : [],
         },
       ]);
-    } catch {
+    } catch (err: unknown) {
+      const detail =
+        err instanceof Error ? err.message : "Unknown network error";
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          content:
-            "Could not reach the search backend. Please check your connection or backend status.",
+          content: `Search request failed (${detail}). Target API: ${API_BASE}`,
         },
       ]);
     } finally {
@@ -205,9 +250,13 @@ export default function Home() {
     }
   };
 
-  const filteredFiles = files.filter((f) =>
-    f.name.toLowerCase().includes(driveFilter.toLowerCase())
-  );
+  const favouriteCount = files.filter((f) => f.isFavorite).length;
+
+  const displayedFiles = files
+    .filter((f) => (activeTab === "favourites" ? Boolean(f.isFavorite) : true))
+    .filter((f) => f.name.toLowerCase().includes(driveFilter.toLowerCase()));
+
+  const isFileSpaceTab = activeTab === "drive" || activeTab === "favourites";
 
   return (
     <div className="flex h-screen bg-gray-50 text-gray-900 font-sans">
@@ -281,6 +330,32 @@ export default function Home() {
               {files.length}
             </span>
           </button>
+
+          <button
+            onClick={() => {
+              setActiveTab("favourites");
+              loadFiles(sortBy);
+            }}
+            className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition ${
+              activeTab === "favourites"
+                ? "bg-amber-50 text-amber-700"
+                : "text-gray-600 hover:bg-gray-100"
+            }`}
+          >
+            <span className="flex items-center gap-2.5">
+              <Star
+                className={`w-4 h-4 ${
+                  activeTab === "favourites"
+                    ? "fill-amber-400 text-amber-500"
+                    : ""
+                }`}
+              />
+              Favourites
+            </span>
+            <span className="text-xs bg-white border border-gray-200 text-gray-700 px-2 py-0.5 rounded-full">
+              {favouriteCount}
+            </span>
+          </button>
         </nav>
 
         <div className="pt-4 border-t border-gray-100 text-xs text-gray-400">
@@ -290,14 +365,20 @@ export default function Home() {
 
       {/* MAIN CONTENT AREA */}
       <main className="flex-1 flex flex-col overflow-hidden">
-        {activeTab === "drive" ? (
-          /* ================= MY DRIVE VIEW ================= */
+        {isFileSpaceTab ? (
+          /* ================= MY DRIVE & FAVOURITES VIEW ================= */
           <div className="flex-1 flex flex-col overflow-hidden">
             <header className="h-16 bg-white border-b border-gray-200 px-6 flex items-center justify-between gap-4">
               <div className="flex items-center gap-2.5">
-                <FolderOpen className="w-5 h-5 text-blue-600" />
+                {activeTab === "favourites" ? (
+                  <Star className="w-5 h-5 fill-amber-400 text-amber-500" />
+                ) : (
+                  <FolderOpen className="w-5 h-5 text-blue-600" />
+                )}
                 <h2 className="font-semibold text-lg">
-                  All Uploaded Files ({filteredFiles.length})
+                  {activeTab === "favourites"
+                    ? `Favourite Files (${displayedFiles.length})`
+                    : `All Uploaded Files (${displayedFiles.length})`}
                 </h2>
               </div>
 
@@ -372,15 +453,33 @@ export default function Home() {
               {isLoadingFiles ? (
                 <div className="flex items-center justify-center h-48 text-gray-500 gap-2">
                   <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
-                  <span>Loading files from Drive...</span>
+                  <span>Loading files...</span>
                 </div>
-              ) : filteredFiles.length === 0 ? (
+              ) : displayedFiles.length === 0 ? (
                 <div className="text-center py-16 bg-white border border-dashed border-gray-300 rounded-xl">
-                  <FolderOpen className="w-10 h-10 text-gray-300 mx-auto mb-2" />
-                  <p className="text-gray-600 font-medium">No files found</p>
-                  <p className="text-xs text-gray-400 mt-1">
-                    Click &quot;+ Upload File&quot; in the sidebar to add documents.
-                  </p>
+                  {activeTab === "favourites" ? (
+                    <>
+                      <Star className="w-10 h-10 text-gray-300 mx-auto mb-2" />
+                      <p className="text-gray-600 font-medium">
+                        No favourite files yet
+                      </p>
+                      <p className="text-xs text-gray-400 mt-1">
+                        Click the star icon on any document in My Drive or AI
+                        Search to pin it here.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <FolderOpen className="w-10 h-10 text-gray-300 mx-auto mb-2" />
+                      <p className="text-gray-600 font-medium">
+                        No files found
+                      </p>
+                      <p className="text-xs text-gray-400 mt-1">
+                        Click &quot;+ Upload File&quot; in the sidebar to add
+                        documents.
+                      </p>
+                    </>
+                  )}
                 </div>
               ) : viewMode === "list" ? (
                 <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
@@ -388,6 +487,7 @@ export default function Home() {
                     <thead className="bg-gray-50 border-b border-gray-200 text-xs uppercase text-gray-500">
                       <tr>
                         <th className="py-3 px-4 w-12">#</th>
+                        <th className="py-3 px-4 w-12 text-center">Fav</th>
                         <th className="py-3 px-4">File Name</th>
                         <th className="py-3 px-4">Type</th>
                         <th className="py-3 px-4">Size</th>
@@ -396,13 +496,33 @@ export default function Home() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {filteredFiles.map((doc, index) => (
+                      {displayedFiles.map((doc, index) => (
                         <tr
                           key={doc.id}
                           className="hover:bg-gray-50 transition"
                         >
                           <td className="py-3 px-4 text-gray-400 font-mono text-xs">
                             {index + 1}
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            <button
+                              onClick={() => handleToggleFavorite(doc.id)}
+                              disabled={togglingFavId === doc.id}
+                              title={
+                                doc.isFavorite
+                                  ? "Remove from Favourites"
+                                  : "Add to Favourites"
+                              }
+                              className="p-1 rounded-md hover:bg-amber-50 transition"
+                            >
+                              <Star
+                                className={`w-4 h-4 ${
+                                  doc.isFavorite
+                                    ? "fill-amber-400 text-amber-500"
+                                    : "text-gray-300 hover:text-amber-400"
+                                }`}
+                              />
+                            </button>
                           </td>
                           <td className="py-3 px-4 font-medium flex items-center gap-2.5">
                             <FileText className="w-4 h-4 text-blue-600 flex-shrink-0" />
@@ -451,7 +571,7 @@ export default function Home() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                  {filteredFiles.map((doc) => (
+                  {displayedFiles.map((doc) => (
                     <div
                       key={doc.id}
                       className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-md transition flex flex-col justify-between"
@@ -461,9 +581,29 @@ export default function Home() {
                           <div className="p-2.5 bg-blue-50 text-blue-600 rounded-lg">
                             <FileText className="w-6 h-6" />
                           </div>
-                          <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-gray-100 text-gray-600">
-                            {doc.type}
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => handleToggleFavorite(doc.id)}
+                              disabled={togglingFavId === doc.id}
+                              title={
+                                doc.isFavorite
+                                  ? "Remove from Favourites"
+                                  : "Add to Favourites"
+                              }
+                              className="p-1.5 rounded-md hover:bg-amber-50 transition"
+                            >
+                              <Star
+                                className={`w-4 h-4 ${
+                                  doc.isFavorite
+                                    ? "fill-amber-400 text-amber-500"
+                                    : "text-gray-300 hover:text-amber-400"
+                                }`}
+                              />
+                            </button>
+                            <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-gray-100 text-gray-600">
+                              {doc.type}
+                            </span>
+                          </div>
                         </div>
                         <p
                           className="font-medium text-sm text-gray-900 line-clamp-2"
@@ -513,16 +653,28 @@ export default function Home() {
                 <Bot className="w-6 h-6 text-blue-600" />
                 <h2 className="font-semibold text-lg">AI Document Search</h2>
               </div>
-              <button
-                onClick={() => {
-                  setActiveTab("drive");
-                  loadFiles(sortBy);
-                }}
-                className="flex items-center gap-2 px-3.5 py-1.5 text-sm font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition"
-              >
-                <FolderOpen className="w-4 h-4" />
-                <span>View All Files ({files.length})</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    setActiveTab("favourites");
+                    loadFiles(sortBy);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-lg transition"
+                >
+                  <Star className="w-4 h-4 fill-amber-400 text-amber-500" />
+                  <span>Favourites ({favouriteCount})</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveTab("drive");
+                    loadFiles(sortBy);
+                  }}
+                  className="flex items-center gap-2 px-3.5 py-1.5 text-sm font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition"
+                >
+                  <FolderOpen className="w-4 h-4" />
+                  <span>View All Files ({files.length})</span>
+                </button>
+              </div>
             </header>
 
             <div className="flex-1 p-6 overflow-y-auto space-y-4">
@@ -567,32 +719,57 @@ export default function Home() {
                           <p className="text-xs font-bold text-gray-500 uppercase">
                             Matching Files:
                           </p>
-                          {msg.matchedFiles.map((f) => (
-                            <div
-                              key={f.id}
-                              className="bg-blue-50 border border-blue-100 rounded-lg p-2.5 text-xs flex items-center justify-between gap-3"
-                            >
-                              <div className="min-w-0">
-                                <p className="font-semibold text-blue-900 truncate">
-                                  {f.name}
-                                </p>
-                                {f.relevanceSnippet && (
-                                  <p className="text-gray-600 italic line-clamp-1 mt-0.5">
-                                    &quot;{f.relevanceSnippet}&quot;
-                                  </p>
-                                )}
-                              </div>
-                              <a
-                                href={`${API_BASE}/api/download/${f.id}`}
-                                target="_blank"
-                                rel="noreferrer"
-                                title="Download file"
-                                className="p-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 flex-shrink-0"
+                          {msg.matchedFiles.map((f) => {
+                            const storedMatch = files.find(
+                              (item) => item.id === f.id
+                            );
+                            const isFav = Boolean(storedMatch?.isFavorite);
+                            return (
+                              <div
+                                key={f.id}
+                                className="bg-blue-50 border border-blue-100 rounded-lg p-2.5 text-xs flex items-center justify-between gap-3"
                               >
-                                <Download className="w-3.5 h-3.5" />
-                              </a>
-                            </div>
-                          ))}
+                                <div className="min-w-0 flex-1">
+                                  <p className="font-semibold text-blue-900 truncate">
+                                    {f.name}
+                                  </p>
+                                  {f.relevanceSnippet && (
+                                    <p className="text-gray-600 italic line-clamp-1 mt-0.5">
+                                      &quot;{f.relevanceSnippet}&quot;
+                                    </p>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-1.5 flex-shrink-0">
+                                  <button
+                                    onClick={() => handleToggleFavorite(f.id)}
+                                    title={
+                                      isFav
+                                        ? "Remove from Favourites"
+                                        : "Add to Favourites"
+                                    }
+                                    className="p-1.5 bg-white border border-blue-100 rounded hover:bg-amber-50 transition"
+                                  >
+                                    <Star
+                                      className={`w-3.5 h-3.5 ${
+                                        isFav
+                                          ? "fill-amber-400 text-amber-500"
+                                          : "text-gray-400"
+                                      }`}
+                                    />
+                                  </button>
+                                  <a
+                                    href={`${API_BASE}/api/download/${f.id}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    title="Download file"
+                                    className="p-1.5 bg-blue-600 text-white rounded hover:bg-blue-700"
+                                  >
+                                    <Download className="w-3.5 h-3.5" />
+                                  </a>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>

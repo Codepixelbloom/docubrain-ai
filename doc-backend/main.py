@@ -2,7 +2,6 @@ import os
 import io
 import uuid
 from typing import List
-import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,20 +24,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Configuration (Reads from .env or Cloud Environment Variables) ---
+# --- Configuration (Reads from .env or Render Environment Variables) ---
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "brain-ai")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "brain-ai-1024")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "docubrain-files")
 
-HF_TOKEN = os.getenv("HF_TOKEN")
-HF_API_URL = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
-
-if not PINECONE_API_KEY or not SUPABASE_URL or not SUPABASE_SERVICE_KEY or not HF_TOKEN:
+if not PINECONE_API_KEY or not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
     raise RuntimeError(
-        "Missing required environment variables: PINECONE_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY, or HF_TOKEN"
+        "Missing required environment variables: PINECONE_API_KEY, SUPABASE_URL, or SUPABASE_SERVICE_KEY"
     )
 
 # Initialize Pinecone & Supabase clients
@@ -51,20 +47,19 @@ class QueryRequest(BaseModel):
     query: str
 
 
-def get_embeddings(texts: List[str]) -> List[List[float]]:
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    response = requests.post(
-        HF_API_URL,
-        headers=headers,
-        json={"inputs": texts, "options": {"wait_for_model": True}},
-        timeout=60,
-    )
-    if response.status_code != 200:
+def get_embeddings(texts: List[str], input_type: str = "passage") -> List[List[float]]:
+    try:
+        res = pc.inference.embed(
+            model="multilingual-e5-large",
+            inputs=texts,
+            parameters={"input_type": input_type, "truncate": "END"},
+        )
+        return [item["values"] for item in res]
+    except Exception as e:
         raise HTTPException(
             status_code=502,
-            detail=f"Hugging Face embedding error: {response.text}",
+            detail=f"Pinecone embedding error: {str(e)}",
         )
-    return response.json()
 
 
 def extract_text_from_pdf_bytes(file_bytes: bytes) -> str:
@@ -120,7 +115,7 @@ async def upload_file(file: UploadFile = File(...)):
     # 3. Chunk and upsert vectors + storage_path metadata to Pinecone
     chunks = chunk_text(extracted_text)
     if chunks:
-        embeddings = get_embeddings(chunks)
+        embeddings = get_embeddings(chunks, input_type="passage")
         vectors_to_upsert = []
         for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
             vectors_to_upsert.append(
@@ -142,7 +137,7 @@ async def upload_file(file: UploadFile = File(...)):
 
 @app.post("/api/search")
 async def search_files(request: QueryRequest):
-    query_embedding = get_embeddings([request.query])[0]
+    query_embedding = get_embeddings([request.query], input_type="query")[0]
 
     results = index.query(
         vector=query_embedding,
@@ -179,7 +174,6 @@ async def search_files(request: QueryRequest):
 
 @app.get("/api/download/{file_id}")
 async def download_file(file_id: str):
-    # Look up the storage_path stored in Pinecone metadata for this file_id
     res = index.fetch(ids=[f"{file_id}_chunk_0"])
     vectors = res.get("vectors", {})
     chunk_data = vectors.get(f"{file_id}_chunk_0")
@@ -191,7 +185,6 @@ async def download_file(file_id: str):
     if not storage_path:
         raise HTTPException(status_code=404, detail="Storage path missing")
 
-    # Generate a 10-minute signed download URL from Supabase
     signed = supabase.storage.from_(SUPABASE_BUCKET).create_signed_url(
         storage_path, 600, {"download": True}
     )

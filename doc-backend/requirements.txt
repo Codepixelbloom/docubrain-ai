@@ -5,3 +5,4 @@ pinecone>=10.0.0
 python-multipart
 python-dotenv
 supabase
+google-genai

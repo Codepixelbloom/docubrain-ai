@@ -125,27 +125,57 @@ async def upload_file(file: UploadFile = File(...)):
 @app.post("/api/search")
 async def search_files(request: QueryRequest):
     try:
-        results = index.documents.search(
-            namespace=PINECONE_NAMESPACE,
-            top_k=5,
-            score_by=[
-                {
-                    "type": "embed",
-                    "field": "chunk_text",
-                    "query": request.query,
-                }
-            ],
-            include_fields=["file_id", "filename", "chunk_text"],
-        )
+        # Query Pinecone Document Index using integrated embedding on 'chunk_text'
+        try:
+            results = index.documents.search(
+                namespace=PINECONE_NAMESPACE,
+                query={
+                    "inputs": {"text": request.query},
+                    "top_k": 5,
+                },
+                fields=["file_id", "filename", "chunk_text"],
+            )
+        except TypeError:
+            # Fallback for older/alternate SDK signature
+            results = index.documents.search(
+                namespace=PINECONE_NAMESPACE,
+                top_k=5,
+                score_by=[
+                    {
+                        "type": "embed",
+                        "field": "chunk_text",
+                        "query": request.query,
+                    }
+                ],
+                include_fields=["file_id", "filename", "chunk_text"],
+            )
 
         matched_files = []
         seen_files = set()
 
-        matches = getattr(results, "matches", None) or results.get("matches", [])
-        for match in matches:
-            fields = getattr(match, "fields", None) or match.get("fields", {})
-            if not isinstance(fields, dict):
-                fields = dict(fields)
+        # Convert SDK response object or dict safely
+        res_dict = results.to_dict() if hasattr(results, "to_dict") else (
+            results if isinstance(results, dict) else vars(results)
+        )
+
+        # Pinecone Document Search returns hits inside result.hits or matches
+        hits = (
+            res_dict.get("result", {}).get("hits")
+            or res_dict.get("hits")
+            or res_dict.get("matches")
+            or []
+        )
+
+        for hit in hits:
+            hit_dict = hit.to_dict() if hasattr(hit, "to_dict") else (
+                hit if isinstance(hit, dict) else vars(hit)
+            )
+            fields = hit_dict.get("fields") or hit_dict.get("metadata") or hit_dict
+            if hasattr(fields, "to_dict"):
+                fields = fields.to_dict()
+            elif not isinstance(fields, dict):
+                fields = vars(fields)
+
             fid = fields.get("file_id")
             if fid and fid not in seen_files:
                 seen_files.add(fid)
@@ -153,7 +183,7 @@ async def search_files(request: QueryRequest):
                     {
                         "id": fid,
                         "name": fields.get("filename", "Unknown"),
-                        "relevanceSnippet": fields.get("chunk_text", "")[:140] + "...",
+                        "relevanceSnippet": str(fields.get("chunk_text", ""))[:140] + "...",
                     }
                 )
 
@@ -168,7 +198,6 @@ async def search_files(request: QueryRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
-
 
 @app.get("/api/download/{file_id}")
 async def download_file(file_id: str):

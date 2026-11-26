@@ -1,6 +1,6 @@
 import os
 import io
-import uuid
+import hashlib
 from typing import List
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -74,28 +74,45 @@ async def health_check():
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
     try:
-        file_id = str(uuid.uuid4())
         filename = file.filename or "unknown.pdf"
-        storage_path = f"{file_id}/{filename}"
         file_bytes = await file.read()
 
-        # 1. Upload raw file to Supabase Storage
+        # Deterministic SHA-256 hash of file contents prevents duplicate storage & indexing
+        file_id = hashlib.sha256(file_bytes).hexdigest()[:32]
+        storage_path = f"{file_id}/{filename}"
+
+        # 1. Check if this exact file is already indexed in Pinecone
+        existing = index.documents.fetch(
+            namespace=PINECONE_NAMESPACE,
+            ids=[f"{file_id}_chunk_0"],
+        )
+        existing_docs = getattr(existing, "documents", None) or (
+            existing.get("documents", {}) if isinstance(existing, dict) else {}
+        )
+        if f"{file_id}_chunk_0" in existing_docs:
+            return {
+                "file_id": file_id,
+                "filename": filename,
+                "status": "already_exists",
+            }
+
+        # 2. Upload to Supabase Storage with upsert="true" so re-uploads overwrite instead of failing/duplicating
         supabase.storage.from_(SUPABASE_BUCKET).upload(
             path=storage_path,
             file=file_bytes,
             file_options={
                 "content-type": file.content_type or "application/octet-stream",
-                "upsert": "false",
+                "upsert": "true",
             },
         )
 
-        # 2. Extract text from memory
+        # 3. Extract text from memory
         if filename.lower().endswith(".pdf"):
             extracted_text = extract_text_from_pdf_bytes(file_bytes)
         else:
             extracted_text = file_bytes.decode("utf-8", errors="ignore")
 
-        # 3. Chunk and upsert documents in batches of 50 (Pinecone embeds chunk_text automatically)
+        # 4. Chunk and upsert documents in batches of 50 (deterministic _ids overwrite cleanly)
         chunks = chunk_text(extracted_text)
         if chunks:
             documents = [
@@ -125,21 +142,19 @@ async def upload_file(file: UploadFile = File(...)):
 @app.post("/api/search")
 async def search_files(request: QueryRequest):
     try:
-        # Query Pinecone Document Index using integrated embedding on 'chunk_text'
         try:
             results = index.documents.search(
                 namespace=PINECONE_NAMESPACE,
                 query={
                     "inputs": {"text": request.query},
-                    "top_k": 5,
+                    "top_k": 10,
                 },
                 fields=["file_id", "filename", "chunk_text"],
             )
         except TypeError:
-            # Fallback for older/alternate SDK signature
             results = index.documents.search(
                 namespace=PINECONE_NAMESPACE,
-                top_k=5,
+                top_k=10,
                 score_by=[
                     {
                         "type": "embed",
@@ -151,14 +166,14 @@ async def search_files(request: QueryRequest):
             )
 
         matched_files = []
-        seen_files = set()
+        seen_keys = set()
 
-        # Convert SDK response object or dict safely
-        res_dict = results.to_dict() if hasattr(results, "to_dict") else (
-            results if isinstance(results, dict) else vars(results)
+        res_dict = (
+            results.to_dict()
+            if hasattr(results, "to_dict")
+            else (results if isinstance(results, dict) else vars(results))
         )
 
-        # Pinecone Document Search returns hits inside result.hits or matches
         hits = (
             res_dict.get("result", {}).get("hits")
             or res_dict.get("hits")
@@ -167,8 +182,10 @@ async def search_files(request: QueryRequest):
         )
 
         for hit in hits:
-            hit_dict = hit.to_dict() if hasattr(hit, "to_dict") else (
-                hit if isinstance(hit, dict) else vars(hit)
+            hit_dict = (
+                hit.to_dict()
+                if hasattr(hit, "to_dict")
+                else (hit if isinstance(hit, dict) else vars(hit))
             )
             fields = hit_dict.get("fields") or hit_dict.get("metadata") or hit_dict
             if hasattr(fields, "to_dict"):
@@ -177,12 +194,16 @@ async def search_files(request: QueryRequest):
                 fields = vars(fields)
 
             fid = fields.get("file_id")
-            if fid and fid not in seen_files:
-                seen_files.add(fid)
+            fname = fields.get("filename", "Unknown")
+            # Deduplicate by both file_id and filename
+            dedup_key = (fid, fname)
+            if fid and dedup_key not in seen_keys and fname not in seen_keys:
+                seen_keys.add(dedup_key)
+                seen_keys.add(fname)
                 matched_files.append(
                     {
                         "id": fid,
-                        "name": fields.get("filename", "Unknown"),
+                        "name": fname,
                         "relevanceSnippet": str(fields.get("chunk_text", ""))[:140] + "...",
                     }
                 )
@@ -199,6 +220,7 @@ async def search_files(request: QueryRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
+
 @app.get("/api/download/{file_id}")
 async def download_file(file_id: str):
     try:
@@ -206,13 +228,19 @@ async def download_file(file_id: str):
             namespace=PINECONE_NAMESPACE,
             ids=[f"{file_id}_chunk_0"],
         )
-        docs = getattr(res, "documents", None) or res.get("documents", {})
+        docs = getattr(res, "documents", None) or (
+            res.get("documents", {}) if isinstance(res, dict) else {}
+        )
         chunk_data = docs.get(f"{file_id}_chunk_0")
 
         if not chunk_data:
             raise HTTPException(status_code=404, detail="File metadata not found")
 
-        fields = getattr(chunk_data, "fields", None) or chunk_data.get("fields", chunk_data)
+        fields = getattr(chunk_data, "fields", None) or (
+            chunk_data.get("fields", chunk_data)
+            if isinstance(chunk_data, dict)
+            else vars(chunk_data)
+        )
         if not isinstance(fields, dict):
             fields = dict(fields)
 

@@ -11,6 +11,7 @@ import PyPDF2
 from pinecone import Pinecone
 from supabase import create_client, Client
 from google import genai
+from google.genai import types
 
 load_dotenv()
 
@@ -40,11 +41,18 @@ if not PINECONE_API_KEY or not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         "Missing required environment variables: PINECONE_API_KEY, SUPABASE_URL, or SUPABASE_SERVICE_KEY"
     )
 
-# Initialize Pinecone, Supabase, and Gemini clients
+# Initialize Pinecone, Supabase, and Gemini clients (12s timeout prevents infinite search hang)
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(PINECONE_INDEX_NAME)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+gemini_client = (
+    genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options=types.HttpOptions(timeout=12000),
+    )
+    if GEMINI_API_KEY
+    else None
+)
 
 
 class QueryRequest(BaseModel):
@@ -85,11 +93,10 @@ async def upload_file(file: UploadFile = File(...)):
         filename = file.filename or "unknown.pdf"
         file_bytes = await file.read()
 
-        # Deterministic SHA-256 hash of file contents prevents duplicate storage & indexing
         file_id = hashlib.sha256(file_bytes).hexdigest()[:32]
         storage_path = f"{file_id}/{filename}"
 
-        # 1. Always ensure the raw file exists in Supabase Storage (upsert overwrites cleanly)
+        # 1. Ensure raw file exists in Supabase Storage
         supabase.storage.from_(SUPABASE_BUCKET).upload(
             path=storage_path,
             file=file_bytes,
@@ -99,7 +106,7 @@ async def upload_file(file: UploadFile = File(...)):
             },
         )
 
-        # 2. Check if this exact file is already indexed in Pinecone
+        # 2. Skip re-indexing if already in Pinecone
         existing = index.documents.fetch(
             namespace=PINECONE_NAMESPACE,
             ids=[f"{file_id}_chunk_0"],
@@ -114,7 +121,7 @@ async def upload_file(file: UploadFile = File(...)):
                 "status": "already_exists",
             }
 
-        # 3. Extract text and index in Pinecone in batches of 50
+        # 3. Extract text and upsert to Pinecone in batches of 50
         if filename.lower().endswith(".pdf"):
             extracted_text = extract_text_from_pdf_bytes(file_bytes)
         else:
@@ -155,14 +162,14 @@ async def search_files(request: QueryRequest):
                 namespace=PINECONE_NAMESPACE,
                 query={
                     "inputs": {"text": request.query},
-                    "top_k": 8,
+                    "top_k": 5,
                 },
                 fields=["file_id", "filename", "chunk_text"],
             )
         except TypeError:
             results = index.documents.search(
                 namespace=PINECONE_NAMESPACE,
-                top_k=8,
+                top_k=5,
                 score_by=[
                     {
                         "type": "embed",
@@ -206,11 +213,9 @@ async def search_files(request: QueryRequest):
             fname = fields.get("filename", "Unknown")
             chunk_content = str(fields.get("chunk_text", "")).strip()
 
-            # Keep top 5 chunks with source filename for LLM context synthesis
-            if chunk_content and len(context_blocks) < 5:
-                context_blocks.append(f"\n{chunk_content}")
+            if chunk_content and len(context_blocks) < 4:
+                context_blocks.append(f"\n{chunk_content[:1200]}")
 
-            # Deduplicate matched files list by both file_id and filename
             dedup_key = (fid, fname)
             if fid and dedup_key not in seen_keys and fname not in seen_keys:
                 seen_keys.add(dedup_key)
@@ -229,13 +234,13 @@ async def search_files(request: QueryRequest):
             joined_context = "\n\n---\n\n".join(context_blocks)
             prompt = (
                 "You are DocuBrain AI, a helpful document assistant. Answer the user's question "
-                "using ONLY the provided document excerpts below. Cite the source filename(s) when "
-                "referencing information. If the excerpts do not contain the answer, say so clearly.\n\n"
+                "concisely using ONLY the provided document excerpts below. Cite the source filename(s). "
+                "If the excerpts do not contain the answer, say so clearly.\n\n"
                 f"User Question: {request.query}\n\n"
                 f"Document Excerpts:\n{joined_context}"
             )
             answer = None
-            for model_name in ["gemini-3.8-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]:
+            for model_name in ["gemini-2.5-flash-lite", "gemini-3.8-flash"]:
                 try:
                     llm_response = gemini_client.models.generate_content(
                         model=model_name,
@@ -248,10 +253,7 @@ async def search_files(request: QueryRequest):
                     print(f"GEMINI ERROR ({model_name}): {llm_err}")
 
             if not answer:
-                answer = (
-                    f"Found {len(matched_files)} matching document(s) "
-                    "(AI summary temporarily unavailable due to high model demand — try again in a few seconds):"
-                )
+                answer = f"I scanned your indexed files and found {len(matched_files)} document(s) matching your request:"
         else:
             answer = f"I scanned your indexed files and found {len(matched_files)} document(s) matching your request:"
 

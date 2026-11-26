@@ -1,5 +1,6 @@
 import os
 import io
+import json
 import hashlib
 from typing import List
 from dotenv import load_dotenv
@@ -30,6 +31,7 @@ app.add_middleware(
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "brain-ai-1024")
 PINECONE_NAMESPACE = os.getenv("PINECONE_NAMESPACE", "default")
+MIN_SIMILARITY_SCORE = float(os.getenv("MIN_SIMILARITY_SCORE", "0.25"))
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
@@ -110,7 +112,7 @@ async def upload_file(file: UploadFile = File(...)):
         file_id = hashlib.sha256(file_bytes).hexdigest()[:32]
         storage_path = f"{file_id}/{filename}"
 
-        # 1. Extract clean text BEFORE storing/indexing so binary files never pollute Pinecone
+        # 1. Extract clean text BEFORE storing/indexing
         lower_name = filename.lower()
         if lower_name.endswith(".pdf"):
             extracted_text = extract_text_from_pdf_bytes(file_bytes)
@@ -148,7 +150,7 @@ async def upload_file(file: UploadFile = File(...)):
             },
         )
 
-        # 3. Chunk and upsert to Pinecone in batches of 50 (overwrites any old chunks cleanly)
+        # 3. Chunk and upsert to Pinecone in batches of 50
         chunks = chunk_text(extracted_text)
         if chunks:
             documents = [
@@ -207,7 +209,7 @@ async def search_files(request: QueryRequest):
                 include_fields=["file_id", "filename", "chunk_text"],
             )
 
-        matched_files = []
+        candidate_files = []
         seen_keys = set()
         context_blocks = []
         chunks_per_file = {}
@@ -231,6 +233,12 @@ async def search_files(request: QueryRequest):
                 if hasattr(hit, "to_dict")
                 else (hit if isinstance(hit, dict) else vars(hit))
             )
+
+            # Filter out weak/irrelevant vector hits below the similarity threshold
+            score = hit_dict.get("_score") if "_score" in hit_dict else hit_dict.get("score")
+            if score is not None and float(score) < MIN_SIMILARITY_SCORE:
+                continue
+
             fields = hit_dict.get("fields") or hit_dict.get("metadata") or hit_dict
             if hasattr(fields, "to_dict"):
                 fields = fields.to_dict()
@@ -241,17 +249,16 @@ async def search_files(request: QueryRequest):
             fname = fields.get("filename", "Unknown")
             chunk_content = str(fields.get("chunk_text", "")).strip()
 
-            # Take up to 2 chunks per distinct file (up to 8 excerpts total) so multi-document summaries cover all files
             file_count = chunks_per_file.get(fname, 0)
             if chunk_content and file_count < 2 and len(context_blocks) < 8:
                 chunks_per_file[fname] = file_count + 1
-                context_blocks.append(f"\n{chunk_content[:1200]}")
+                context_blocks.append(f"[Source: {fname}]\n{chunk_content[:1200]}")
 
             dedup_key = (fid, fname)
             if fid and dedup_key not in seen_keys and fname not in seen_keys:
                 seen_keys.add(dedup_key)
                 seen_keys.add(fname)
-                matched_files.append(
+                candidate_files.append(
                     {
                         "id": fid,
                         "name": fname,
@@ -259,39 +266,63 @@ async def search_files(request: QueryRequest):
                     }
                 )
 
-        if not matched_files:
-            answer = f"I searched your files for '{request.query}', but found no matching topics."
-        elif gemini_client and context_blocks:
+        if not candidate_files:
+            return {
+                "answer": f"No documents were found covering '{request.query}'.",
+                "matched_files": [],
+            }
+
+        if gemini_client and context_blocks:
             joined_context = "\n\n---\n\n".join(context_blocks)
             prompt = (
-                "You are DocuBrain AI, a helpful document assistant. Answer the user's question "
-                "using ONLY the provided document excerpts below. Cover ALL distinct source documents "
-                "present in the excerpts and cite each source filename clearly. "
-                "If the excerpts do not contain the answer, say so clearly.\n\n"
-                f"User Question: {request.query}\n\n"
+                "You are DocuBrain AI, a strict document retrieval assistant. "
+                "Analyze the user's request and the provided document excerpts.\n"
+                "Return ONLY valid JSON with two keys:\n"
+                '1. "answer": A concise response answering the user\'s question using ONLY the excerpts. '
+                "If NONE of the excerpts contain information relevant to the user's topic, clearly state that no uploaded documents cover that topic.\n"
+                '2. "relevant_files": A JSON array of exact source filenames (from the headers) that actually contain information relevant to the user\'s request. '
+                "If NO documents contain the requested topic, return an empty array [].\n\n"
+                f"User Request: {request.query}\n\n"
                 f"Document Excerpts:\n{joined_context}"
             )
-            answer = None
+
+            parsed_result = None
             for model_name in ["gemini-3.5-flash-lite", "gemini-3.8-flash"]:
                 try:
                     llm_response = gemini_client.models.generate_content(
                         model=model_name,
                         contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                        ),
                     )
                     if llm_response.text:
-                        answer = llm_response.text
+                        parsed_result = json.loads(llm_response.text)
                         break
                 except Exception as llm_err:
                     print(f"GEMINI ERROR ({model_name}): {llm_err}")
 
-            if not answer:
-                answer = f"I scanned your indexed files and found {len(matched_files)} document(s) matching your request:"
-        else:
-            answer = f"I scanned your indexed files and found {len(matched_files)} document(s) matching your request:"
+            if isinstance(parsed_result, dict):
+                answer = str(
+                    parsed_result.get("answer")
+                    or f"No documents were found covering '{request.query}'."
+                )
+                relevant_names = {
+                    str(name).strip().lower()
+                    for name in parsed_result.get("relevant_files", [])
+                }
+                matched_files = [
+                    f for f in candidate_files if f["name"].strip().lower() in relevant_names
+                ]
+                return {
+                    "answer": answer,
+                    "matched_files": matched_files,
+                }
 
+        # Fallback if Gemini is unavailable
         return {
-            "answer": answer,
-            "matched_files": matched_files,
+            "answer": f"I scanned your indexed files and found {len(candidate_files)} document(s) matching your request:",
+            "matched_files": candidate_files,
         }
     except Exception as e:
         print(f"SEARCH ERROR: {e}")

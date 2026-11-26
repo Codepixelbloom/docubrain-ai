@@ -3,7 +3,7 @@ import io
 import re
 import json
 import hashlib
-from typing import List
+from typing import List, Any
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -61,6 +61,26 @@ gemini_client = (
 
 class QueryRequest(BaseModel):
     query: str
+
+
+def to_plain_dict(obj: Any) -> dict:
+    """Safely converts Pinecone SDK response/model objects into plain Python dicts."""
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    try:
+        return dict(obj)
+    except Exception:
+        result = {}
+        for key in ("documents", "fields", "metadata", "result", "hits", "matches", "_score", "score"):
+            if hasattr(obj, key):
+                result[key] = getattr(obj, key)
+        return result
 
 
 def extract_text_from_pdf_bytes(file_bytes: bytes) -> str:
@@ -149,6 +169,28 @@ def list_all_stored_files() -> List[dict]:
     except Exception as e:
         print(f"STORAGE LIST ERROR: {e}")
     return files
+
+
+def fetch_chunks_for_file(file_id: str, max_chunks: int = 6) -> List[str]:
+    chunk_ids = [f"{file_id}_chunk_{i}" for i in range(max_chunks)]
+    fetched = index.documents.fetch(
+        namespace=PINECONE_NAMESPACE,
+        ids=chunk_ids,
+    )
+    fetched_dict = to_plain_dict(fetched)
+    docs = to_plain_dict(fetched_dict.get("documents"))
+
+    texts = []
+    for cid in chunk_ids:
+        cdata = docs.get(cid)
+        if not cdata:
+            continue
+        cdata_dict = to_plain_dict(cdata)
+        fields = to_plain_dict(cdata_dict.get("fields") or cdata_dict.get("metadata") or cdata_dict)
+        text = str(fields.get("chunk_text", "")).strip()
+        if text:
+            texts.append(text)
+    return texts
 
 
 @app.get("/")
@@ -249,96 +291,55 @@ async def search_files(request: QueryRequest):
         context_blocks = []
         chunks_per_file = {}
 
+        # A. Direct fetch when searching or summarizing by filename
         if named_files:
             for nf in named_files:
                 fid = nf["id"]
                 fname = nf["name"]
-                chunk_ids = [f"{fid}_chunk_{i}" for i in range(6)]
                 try:
-                    fetched = index.documents.fetch(
-                        namespace=PINECONE_NAMESPACE,
-                        ids=chunk_ids,
-                    )
-                    docs = getattr(fetched, "documents", None) or (
-                        fetched.get("documents", {}) if isinstance(fetched, dict) else {}
-                    )
-                    first_snippet = ""
-                    for cid in chunk_ids:
-                        cdata = docs.get(cid)
-                        if not cdata:
-                            continue
-                        fields = getattr(cdata, "fields", None) or (
-                            cdata.get("fields", cdata)
-                            if isinstance(cdata, dict)
-                            else vars(cdata)
-                        )
-                        if not isinstance(fields, dict):
-                            fields = dict(fields)
-                        text = str(fields.get("chunk_text", "")).strip()
-                        if text:
-                            if not first_snippet:
-                                first_snippet = text
-                            chunks_per_file[fname] = chunks_per_file.get(fname, 0) + 1
-                            context_blocks.append(f"\n{text[:1500]}")
+                    texts = fetch_chunks_for_file(fid, max_chunks=6)
+                    for text in texts:
+                        chunks_per_file[fname] = chunks_per_file.get(fname, 0) + 1
+                        context_blocks.append(f"\n{text[:1500]}")
 
-                    if first_snippet and (fid, fname) not in seen_keys:
+                    if texts and (fid, fname) not in seen_keys:
                         seen_keys.add((fid, fname))
                         seen_keys.add(fname)
                         candidate_files.append(
                             {
                                 "id": fid,
                                 "name": fname,
-                                "relevanceSnippet": first_snippet[:140] + "...",
+                                "relevanceSnippet": texts[0][:140] + "...",
                             }
                         )
                 except Exception as fetch_err:
                     print(f"DIRECT FETCH ERROR ({fname}): {fetch_err}")
 
+        # B. Broad summary across all stored documents when no specific filename is given
         if summary_mode and not named_files and stored_files:
             for sf in stored_files:
                 fid = sf["id"]
                 fname = sf["name"]
-                chunk_ids = [f"{fid}_chunk_{i}" for i in range(3)]
                 try:
-                    fetched = index.documents.fetch(
-                        namespace=PINECONE_NAMESPACE,
-                        ids=chunk_ids,
-                    )
-                    docs = getattr(fetched, "documents", None) or (
-                        fetched.get("documents", {}) if isinstance(fetched, dict) else {}
-                    )
-                    first_snippet = ""
-                    for cid in chunk_ids:
-                        cdata = docs.get(cid)
-                        if not cdata:
-                            continue
-                        fields = getattr(cdata, "fields", None) or (
-                            cdata.get("fields", cdata)
-                            if isinstance(cdata, dict)
-                            else vars(cdata)
-                        )
-                        if not isinstance(fields, dict):
-                            fields = dict(fields)
-                        text = str(fields.get("chunk_text", "")).strip()
-                        if text:
-                            if not first_snippet:
-                                first_snippet = text
-                            chunks_per_file[fname] = chunks_per_file.get(fname, 0) + 1
-                            context_blocks.append(f"[Source: {fname}]\n{text[:1200]}")
+                    texts = fetch_chunks_for_file(fid, max_chunks=3)
+                    for text in texts:
+                        chunks_per_file[fname] = chunks_per_file.get(fname, 0) + 1
+                        context_blocks.append(f"\n{text[:1200]}")
 
-                    if first_snippet and (fid, fname) not in seen_keys:
+                    if texts and (fid, fname) not in seen_keys:
                         seen_keys.add((fid, fname))
                         seen_keys.add(fname)
                         candidate_files.append(
                             {
                                 "id": fid,
                                 "name": fname,
-                                "relevanceSnippet": first_snippet[:140] + "...",
+                                "relevanceSnippet": texts[0][:140] + "...",
                             }
                         )
                 except Exception as sum_err:
                     print(f"SUMMARY FETCH ERROR ({fname}): {sum_err}")
 
+        # C. Semantic vector search for topic-based queries
         if not named_files and not summary_mode:
             try:
                 results = index.documents.search(
@@ -363,25 +364,17 @@ async def search_files(request: QueryRequest):
                     include_fields=["file_id", "filename", "chunk_text"],
                 )
 
-            res_dict = (
-                results.to_dict()
-                if hasattr(results, "to_dict")
-                else (results if isinstance(results, dict) else vars(results))
-            )
-
+            res_dict = to_plain_dict(results)
+            result_inner = to_plain_dict(res_dict.get("result"))
             hits = (
-                res_dict.get("result", {}).get("hits")
+                result_inner.get("hits")
                 or res_dict.get("hits")
                 or res_dict.get("matches")
                 or []
             )
 
             for hit in hits:
-                hit_dict = (
-                    hit.to_dict()
-                    if hasattr(hit, "to_dict")
-                    else (hit if isinstance(hit, dict) else vars(hit))
-                )
+                hit_dict = to_plain_dict(hit)
 
                 score = (
                     hit_dict.get("_score")
@@ -391,11 +384,9 @@ async def search_files(request: QueryRequest):
                 if score is not None and float(score) < MIN_SIMILARITY_SCORE:
                     continue
 
-                fields = hit_dict.get("fields") or hit_dict.get("metadata") or hit_dict
-                if hasattr(fields, "to_dict"):
-                    fields = fields.to_dict()
-                elif not isinstance(fields, dict):
-                    fields = vars(fields)
+                fields = to_plain_dict(
+                    hit_dict.get("fields") or hit_dict.get("metadata") or hit_dict
+                )
 
                 fid = fields.get("file_id")
                 fname = fields.get("filename", "Unknown")
@@ -490,21 +481,17 @@ async def download_file(file_id: str):
             namespace=PINECONE_NAMESPACE,
             ids=[f"{file_id}_chunk_0"],
         )
-        docs = getattr(res, "documents", None) or (
-            res.get("documents", {}) if isinstance(res, dict) else {}
-        )
+        res_dict = to_plain_dict(res)
+        docs = to_plain_dict(res_dict.get("documents"))
         chunk_data = docs.get(f"{file_id}_chunk_0")
 
         if not chunk_data:
             raise HTTPException(status_code=404, detail="File metadata not found")
 
-        fields = getattr(chunk_data, "fields", None) or (
-            chunk_data.get("fields", chunk_data)
-            if isinstance(chunk_data, dict)
-            else vars(chunk_data)
+        chunk_dict = to_plain_dict(chunk_data)
+        fields = to_plain_dict(
+            chunk_dict.get("fields") or chunk_dict.get("metadata") or chunk_dict
         )
-        if not isinstance(fields, dict):
-            fields = dict(fields)
 
         storage_path = fields.get("storage_path")
         if not storage_path:

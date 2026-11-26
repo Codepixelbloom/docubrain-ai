@@ -232,7 +232,7 @@ async def search_files(request: QueryRequest):
             )
             try:
                 llm_response = gemini_client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-3.8-flash",
                     contents=prompt,
                 )
                 answer = (

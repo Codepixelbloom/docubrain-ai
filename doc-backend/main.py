@@ -75,7 +75,9 @@ def extract_text_from_docx_bytes(file_bytes: bytes) -> str:
     parts = [p.text for p in doc.paragraphs if p.text.strip()]
     for table in doc.tables:
         for row in table.rows:
-            row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+            row_text = " | ".join(
+                cell.text.strip() for cell in row.cells if cell.text.strip()
+            )
             if row_text:
                 parts.append(row_text)
     return "\n".join(parts)
@@ -108,7 +110,35 @@ async def upload_file(file: UploadFile = File(...)):
         file_id = hashlib.sha256(file_bytes).hexdigest()[:32]
         storage_path = f"{file_id}/{filename}"
 
-        # 1. Ensure raw file exists in Supabase Storage
+        # 1. Extract clean text BEFORE storing/indexing so binary files never pollute Pinecone
+        lower_name = filename.lower()
+        if lower_name.endswith(".pdf"):
+            extracted_text = extract_text_from_pdf_bytes(file_bytes)
+        elif lower_name.endswith(".docx"):
+            try:
+                extracted_text = extract_text_from_docx_bytes(file_bytes)
+            except Exception as docx_err:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Could not parse DOCX file (ensure it is a valid .docx, not legacy .doc): {docx_err}",
+                )
+        elif lower_name.endswith((".txt", ".md", ".csv", ".py", ".js", ".ts", ".json")):
+            extracted_text = file_bytes.decode("utf-8", errors="ignore")
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Unsupported file format. Please upload PDF, DOCX, or TXT files.",
+            )
+
+        if not extracted_text.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="No readable text found in file (scanned image PDFs without OCR are not supported).",
+            )
+
+        print(f"UPLOAD PARSED: {filename} -> {len(extracted_text)} characters")
+
+        # 2. Ensure raw file exists in Supabase Storage
         supabase.storage.from_(SUPABASE_BUCKET).upload(
             path=storage_path,
             file=file_bytes,
@@ -118,16 +148,7 @@ async def upload_file(file: UploadFile = File(...)):
             },
         )
 
-        # 2. Extract clean text based on file extension
-        lower_name = filename.lower()
-        if lower_name.endswith(".pdf"):
-            extracted_text = extract_text_from_pdf_bytes(file_bytes)
-        elif lower_name.endswith(".docx"):
-            extracted_text = extract_text_from_docx_bytes(file_bytes)
-        else:
-            extracted_text = file_bytes.decode("utf-8", errors="ignore")
-
-        # 3. Chunk and upsert to Pinecone in batches of 50 (overwrites any corrupt chunks cleanly)
+        # 3. Chunk and upsert to Pinecone in batches of 50 (overwrites any old chunks cleanly)
         chunks = chunk_text(extracted_text)
         if chunks:
             documents = [
@@ -147,7 +168,12 @@ async def upload_file(file: UploadFile = File(...)):
                     documents=documents[i : i + 50],
                 )
 
-        return {"file_id": file_id, "filename": filename, "status": "indexed"}
+        return {
+            "file_id": file_id,
+            "filename": filename,
+            "chunks_indexed": len(chunks),
+            "status": "indexed",
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -163,14 +189,14 @@ async def search_files(request: QueryRequest):
                 namespace=PINECONE_NAMESPACE,
                 query={
                     "inputs": {"text": request.query},
-                    "top_k": 5,
+                    "top_k": 12,
                 },
                 fields=["file_id", "filename", "chunk_text"],
             )
         except TypeError:
             results = index.documents.search(
                 namespace=PINECONE_NAMESPACE,
-                top_k=5,
+                top_k=12,
                 score_by=[
                     {
                         "type": "embed",
@@ -184,6 +210,7 @@ async def search_files(request: QueryRequest):
         matched_files = []
         seen_keys = set()
         context_blocks = []
+        chunks_per_file = {}
 
         res_dict = (
             results.to_dict()
@@ -214,7 +241,10 @@ async def search_files(request: QueryRequest):
             fname = fields.get("filename", "Unknown")
             chunk_content = str(fields.get("chunk_text", "")).strip()
 
-            if chunk_content and len(context_blocks) < 4:
+            # Take up to 2 chunks per distinct file (up to 8 excerpts total) so multi-document summaries cover all files
+            file_count = chunks_per_file.get(fname, 0)
+            if chunk_content and file_count < 2 and len(context_blocks) < 8:
+                chunks_per_file[fname] = file_count + 1
                 context_blocks.append(f"\n{chunk_content[:1200]}")
 
             dedup_key = (fid, fname)
@@ -235,7 +265,8 @@ async def search_files(request: QueryRequest):
             joined_context = "\n\n---\n\n".join(context_blocks)
             prompt = (
                 "You are DocuBrain AI, a helpful document assistant. Answer the user's question "
-                "concisely using ONLY the provided document excerpts below. Cite the source filename(s). "
+                "using ONLY the provided document excerpts below. Cover ALL distinct source documents "
+                "present in the excerpts and cite each source filename clearly. "
                 "If the excerpts do not contain the answer, say so clearly.\n\n"
                 f"User Question: {request.query}\n\n"
                 f"Document Excerpts:\n{joined_context}"

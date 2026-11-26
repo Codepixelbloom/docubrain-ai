@@ -1,0 +1,14 @@
+# Python Backend
+doc-backend/venv/
+doc-backend/__pycache__/
+doc-backend/.env
+doc-backend/uploaded_files/
+
+# Next.js Frontend
+ai-file-manager/node_modules/
+ai-file-manager/.next/
+ai-file-manager/.env
+ai-file-manager/.env.local
+
+# System Files
+.DS_Store

@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { createClient, Session } from "@supabase/supabase-js";
 import {
   LayoutDashboard,
   Files,
@@ -38,10 +39,12 @@ const API_BASE = (
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 ).replace(/\/$/, "");
 
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+
 const FREE_STORAGE_LIMIT_BYTES = 100 * 1024 * 1024; // 100 MB
 const PROFILE_STORAGE_KEY = "docubrain_profile_v1";
 const THEME_STORAGE_KEY = "docubrain_theme_v1";
-const AUTH_SESSION_KEY = "docubrain_auth_session_v1";
 
 interface StoredDoc {
   id: string;
@@ -80,6 +83,7 @@ type ActiveTab =
   | "login";
 type SettingsSection = "profile" | "storage" | "ai" | "theme";
 type ThemeMode = "light" | "dark" | "system";
+type AuthMode = "signin" | "signup";
 
 const DEFAULT_PROFILE: UserProfile = {
   fullName: "Rahul Sharma",
@@ -170,6 +174,11 @@ function inferCategory(
 }
 
 export default function Home() {
+  const supabase = useMemo(() => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+    return createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }, []);
+
   // Navigation & View States
   const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
   const [settingsSection, setSettingsSection] =
@@ -181,7 +190,12 @@ export default function Home() {
   const [uploadedThisWeek, setUploadedThisWeek] = useState<number>(0);
   const [todayFormatted, setTodayFormatted] = useState<string>("Overview");
 
-  // Profile, Auth & Theme States
+  // Profile, Supabase Auth & Theme States
+  const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState<boolean>(false);
+  const [authMode, setAuthMode] = useState<AuthMode>("signin");
+  const [authSubmitting, setAuthSubmitting] = useState<boolean>(false);
+
   const [profile, setProfile] = useState<UserProfile>(DEFAULT_PROFILE);
   const [draftName, setDraftName] = useState<string>(DEFAULT_PROFILE.fullName);
   const [draftEmail, setDraftEmail] = useState<string>(DEFAULT_PROFILE.email);
@@ -190,28 +204,29 @@ export default function Home() {
   );
   const [profileSavedNotice, setProfileSavedNotice] = useState<boolean>(false);
 
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(false);
   const [loginName, setLoginName] = useState<string>("");
   const [loginEmail, setLoginEmail] = useState<string>("");
   const [loginPassword, setLoginPassword] = useState<string>("");
-  const [loginNotice, setLoginNotice] = useState<string>("");
+  const [loginMessage, setLoginMessage] = useState<string>("");
+  const [loginError, setLoginError] = useState<string>("");
 
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
   const [isDarkResolved, setIsDarkResolved] = useState<boolean>(false);
 
   // File Storage States
   const [files, setFiles] = useState<StoredDoc[]>([]);
-  const [isLoadingFiles, setIsLoadingFiles] = useState<boolean>(true);
+  const [isLoadingFiles, setIsLoadingFiles] = useState<boolean>(false);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [togglingFavId, setTogglingFavId] = useState<string | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   // Chat & Search States
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
       content:
-        "Hello! Ask me anything about your uploaded documents, request summaries, or search by topic.",
+        "Hello! Sign in to search your uploaded documents, request summaries, or find files by topic.",
     },
   ]);
   const [inputQuery, setInputQuery] = useState<string>("");
@@ -221,7 +236,48 @@ export default function Home() {
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // Load saved profile, auth status & theme on client mount
+  const accessToken = session?.access_token || "";
+  const isLoggedIn = Boolean(session?.user);
+
+  const authHeaders = useCallback(
+    (extra: Record<string, string> = {}): Record<string, string> => {
+      const headers: Record<string, string> = { ...extra };
+      if (accessToken) {
+        headers.Authorization = `Bearer ${accessToken}`;
+      }
+      return headers;
+    },
+    [accessToken]
+  );
+
+  // Sync user profile fields when Supabase session updates
+  const applyAuthSession = useCallback((nextSession: Session | null) => {
+    setSession(nextSession);
+    if (nextSession?.user) {
+      const email = nextSession.user.email || "";
+      const metaName =
+        (nextSession.user.user_metadata?.full_name as string | undefined) ||
+        formatNameFromEmail(email);
+
+      setProfile((prev) => {
+        const updated: UserProfile = {
+          fullName: metaName || prev.fullName,
+          email: email || prev.email,
+          photoDataUrl: prev.photoDataUrl,
+        };
+        setDraftName(updated.fullName);
+        setDraftEmail(updated.email);
+        try {
+          localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(updated));
+        } catch {
+          // Ignore storage write errors
+        }
+        return updated;
+      });
+    }
+  }, []);
+
+  // Load saved local profile, theme, and Supabase auth session
   useEffect(() => {
     try {
       const savedProfileRaw = localStorage.getItem(PROFILE_STORAGE_KEY);
@@ -238,20 +294,6 @@ export default function Home() {
         setDraftPhoto(merged.photoDataUrl);
       }
 
-      const savedSessionRaw = localStorage.getItem(AUTH_SESSION_KEY);
-      if (savedSessionRaw) {
-        const parsedSession = JSON.parse(savedSessionRaw) as {
-          isLoggedIn?: boolean;
-          email?: string;
-        };
-        if (parsedSession.isLoggedIn) {
-          setIsLoggedIn(true);
-          if (parsedSession.email) {
-            setLoginEmail(parsedSession.email);
-          }
-        }
-      }
-
       const savedTheme = localStorage.getItem(
         THEME_STORAGE_KEY
       ) as ThemeMode | null;
@@ -265,7 +307,28 @@ export default function Home() {
     } catch {
       // Ignore storage read errors
     }
-  }, []);
+
+    if (!supabase) {
+      setAuthReady(true);
+      return;
+    }
+
+    supabase.auth.getSession().then(({ data }) => {
+      applyAuthSession(data.session ?? null);
+      setAuthReady(true);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      applyAuthSession(nextSession);
+      setAuthReady(true);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [supabase, applyAuthSession]);
 
   // Resolve system / explicit theme
   useEffect(() => {
@@ -290,25 +353,38 @@ export default function Home() {
     return () => media.removeEventListener("change", listener);
   }, [themeMode]);
 
-  const loadFiles = async (selectedSort: SortOption = sortBy) => {
-    setIsLoadingFiles(true);
-    try {
-      const res = await fetch(
-        `${API_BASE}/api/files?sort_by=${encodeURIComponent(selectedSort)}`
-      );
-      if (!res.ok) throw new Error("Failed to fetch files");
-      const data = await res.json();
-      setFiles(Array.isArray(data.files) ? data.files : []);
-    } catch (err) {
-      console.error("Error loading files:", err);
-    } finally {
-      setIsLoadingFiles(false);
-    }
-  };
+  const loadFiles = useCallback(
+    async (selectedSort: SortOption = sortBy) => {
+      if (!accessToken) {
+        setFiles([]);
+        setIsLoadingFiles(false);
+        return;
+      }
+
+      setIsLoadingFiles(true);
+      try {
+        const res = await fetch(
+          `${API_BASE}/api/files?sort_by=${encodeURIComponent(selectedSort)}`,
+          {
+            headers: authHeaders(),
+          }
+        );
+        if (!res.ok) throw new Error("Failed to fetch files");
+        const data = await res.json();
+        setFiles(Array.isArray(data.files) ? data.files : []);
+      } catch (err) {
+        console.error("Error loading files:", err);
+      } finally {
+        setIsLoadingFiles(false);
+      }
+    },
+    [accessToken, authHeaders, sortBy]
+  );
 
   useEffect(() => {
+    if (!authReady) return;
     loadFiles(sortBy);
-  }, [sortBy]);
+  }, [authReady, accessToken, sortBy, loadFiles]);
 
   useEffect(() => {
     setTodayFormatted(
@@ -348,13 +424,23 @@ export default function Home() {
     e.target.value = "";
   };
 
-  const handleSaveProfile = (e: React.FormEvent) => {
+  const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
+    const cleanName = draftName.trim() || DEFAULT_PROFILE.fullName;
+    const cleanEmail = draftEmail.trim() || DEFAULT_PROFILE.email;
+
     const updated: UserProfile = {
-      fullName: draftName.trim() || DEFAULT_PROFILE.fullName,
-      email: draftEmail.trim() || DEFAULT_PROFILE.email,
+      fullName: cleanName,
+      email: cleanEmail,
       photoDataUrl: draftPhoto,
     };
+
+    if (supabase && session?.user) {
+      await supabase.auth.updateUser({
+        data: { full_name: cleanName },
+      });
+    }
+
     setProfile(updated);
     setDraftName(updated.fullName);
     setDraftEmail(updated.email);
@@ -374,55 +460,130 @@ export default function Home() {
     setProfileSavedNotice(false);
   };
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanEmail = loginEmail.trim() || profile.email;
-    const resolvedName = loginName.trim() || formatNameFromEmail(cleanEmail);
+    setLoginError("");
+    setLoginMessage("");
 
-    const updatedProfile: UserProfile = {
-      fullName: resolvedName,
-      email: cleanEmail,
-      photoDataUrl: profile.photoDataUrl,
-    };
-
-    setProfile(updatedProfile);
-    setDraftName(updatedProfile.fullName);
-    setDraftEmail(updatedProfile.email);
-    setIsLoggedIn(true);
-    setLoginPassword("");
-    setLoginNotice(`Signed in as ${updatedProfile.fullName}`);
-
-    try {
-      localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(updatedProfile));
-      localStorage.setItem(
-        AUTH_SESSION_KEY,
-        JSON.stringify({ isLoggedIn: true, email: cleanEmail })
+    if (!supabase) {
+      setLoginError(
+        "Supabase Auth is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local."
       );
-    } catch {
-      // Ignore storage write errors
+      return;
     }
 
-    setTimeout(() => {
-      setLoginNotice("");
-      setActiveTab("dashboard");
-    }, 600);
+    const cleanEmail = loginEmail.trim();
+    const resolvedName = loginName.trim() || formatNameFromEmail(cleanEmail);
+
+    setAuthSubmitting(true);
+    try {
+      if (authMode === "signup") {
+        const { data, error } = await supabase.auth.signUp({
+          email: cleanEmail,
+          password: loginPassword,
+          options: {
+            data: { full_name: resolvedName },
+          },
+        });
+        if (error) throw error;
+
+        if (data.session) {
+          applyAuthSession(data.session);
+          setLoginPassword("");
+          setLoginMessage("Account created and signed in.");
+          setActiveTab("dashboard");
+        } else {
+          setLoginPassword("");
+          setLoginMessage(
+            "Account created. Check your email if confirmation is enabled, then sign in."
+          );
+          setAuthMode("signin");
+        }
+      } else {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password: loginPassword,
+        });
+        if (error) throw error;
+
+        applyAuthSession(data.session);
+        setLoginPassword("");
+        setLoginMessage("Signed in successfully.");
+        setActiveTab("dashboard");
+      }
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error ? err.message : "Authentication request failed.";
+      setLoginError(msg);
+    } finally {
+      setAuthSubmitting(false);
+    }
   };
 
-  const handleLogout = () => {
-    setIsLoggedIn(false);
-    setLoginPassword("");
-    setLoginNotice("Signed out of current session.");
+  const handleLogout = async () => {
+    setLoginError("");
+    setLoginMessage("");
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
+    setSession(null);
+    setFiles([]);
+    setLoginMessage("Signed out.");
+  };
+
+  const handleDownloadFile = async (fileId: string, fileName: string) => {
+    if (!accessToken) {
+      setActiveTab("login");
+      return;
+    }
+
+    setDownloadingId(fileId);
     try {
-      localStorage.setItem(
-        AUTH_SESSION_KEY,
-        JSON.stringify({ isLoggedIn: false, email: profile.email })
-      );
+      const res = await fetch(`${API_BASE}/api/download/${fileId}`, {
+        headers: authHeaders(),
+        redirect: "manual",
+      });
+
+      // Handle direct signed URL redirect or JSON/blob fallback
+      if (res.status === 307 || res.status === 302) {
+        const locationUrl = res.headers.get("location");
+        if (locationUrl) {
+          window.open(locationUrl, "_blank", "noopener,noreferrer");
+          return;
+        }
+      }
+
+      if (res.redirected && res.url) {
+        window.open(res.url, "_blank", "noopener,noreferrer");
+        return;
+      }
+
+      if (!res.ok) {
+        throw new Error("Could not download file");
+      }
+
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
     } catch {
-      // Ignore storage write errors
+      alert("Could not download file.");
+    } finally {
+      setDownloadingId(null);
     }
   };
 
   const handleToggleFavorite = async (fileId: string) => {
+    if (!accessToken) {
+      setActiveTab("login");
+      return;
+    }
+
     setFiles((prev) =>
       prev.map((f) =>
         f.id === fileId ? { ...f, isFavorite: !f.isFavorite } : f
@@ -433,6 +594,7 @@ export default function Home() {
     try {
       const res = await fetch(`${API_BASE}/api/files/${fileId}/favourite`, {
         method: "POST",
+        headers: authHeaders(),
       });
       if (!res.ok) throw new Error("Failed to update favourite");
       const data = await res.json();
@@ -456,6 +618,12 @@ export default function Home() {
     const selectedFile = e.target.files?.[0];
     if (!selectedFile) return;
 
+    if (!accessToken) {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      setActiveTab("login");
+      return;
+    }
+
     setIsUploading(true);
     const formData = new FormData();
     formData.append("file", selectedFile);
@@ -463,6 +631,7 @@ export default function Home() {
     try {
       const res = await fetch(`${API_BASE}/api/upload`, {
         method: "POST",
+        headers: authHeaders(),
         body: formData,
       });
 
@@ -483,12 +652,17 @@ export default function Home() {
   };
 
   const handleDeleteFile = async (fileId: string, fileName: string) => {
+    if (!accessToken) {
+      setActiveTab("login");
+      return;
+    }
     if (!confirm(`Delete "${fileName}" permanently?`)) return;
 
     setDeletingId(fileId);
     try {
       const res = await fetch(`${API_BASE}/api/files/${fileId}`, {
         method: "DELETE",
+        headers: authHeaders(),
       });
       if (!res.ok) throw new Error("Delete failed");
       setFiles((prev) => prev.filter((f) => f.id !== fileId));
@@ -503,6 +677,11 @@ export default function Home() {
     const trimmed = queryText.trim();
     if (!trimmed || isSearching) return;
 
+    if (!accessToken) {
+      setActiveTab("login");
+      return;
+    }
+
     setActiveTab("chat");
     setMessages((prev) => [...prev, { role: "user", content: trimmed }]);
     setIsSearching(true);
@@ -510,7 +689,7 @@ export default function Home() {
     try {
       const res = await fetch(`${API_BASE}/api/search`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ query: trimmed }),
       });
 
@@ -779,7 +958,11 @@ export default function Home() {
             </button>
 
             <button
-              onClick={() => setActiveTab("login")}
+              onClick={() => {
+                setLoginError("");
+                setLoginMessage("");
+                setActiveTab("login");
+              }}
               className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
                 activeTab === "login"
                   ? isDarkResolved
@@ -932,14 +1115,30 @@ export default function Home() {
                   </p>
                 </div>
 
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isUploading}
-                  className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-sm transition"
-                >
-                  <Upload className="w-4 h-4" />
-                  <span>Upload Documents</span>
-                </button>
+                <div className="flex items-center gap-3">
+                  {!isLoggedIn && authReady && (
+                    <button
+                      onClick={() => setActiveTab("login")}
+                      className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border rounded-xl transition ${
+                        isDarkResolved
+                          ? "border-slate-700 text-slate-200 hover:bg-slate-800"
+                          : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                      }`}
+                    >
+                      <LogIn className="w-4 h-4 text-indigo-600" />
+                      <span>Sign In</span>
+                    </button>
+                  )}
+
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isUploading}
+                    className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-sm transition"
+                  >
+                    <Upload className="w-4 h-4" />
+                    <span>Upload Documents</span>
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
@@ -1060,7 +1259,20 @@ export default function Home() {
                     </button>
                   </div>
 
-                  {isLoadingFiles ? (
+                  {!isLoggedIn && authReady ? (
+                    <div className="text-center py-12 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl space-y-3">
+                      <p className="text-sm font-medium text-slate-500">
+                        Sign in to view and manage your personal documents
+                      </p>
+                      <button
+                        onClick={() => setActiveTab("login")}
+                        className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition"
+                      >
+                        <LogIn className="w-3.5 h-3.5" />
+                        <span>Go to Login</span>
+                      </button>
+                    </div>
+                  ) : isLoadingFiles ? (
                     <div className="flex items-center justify-center h-44 text-slate-400 gap-2 text-sm">
                       <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
                       <span>Loading recent documents...</span>
@@ -1092,14 +1304,15 @@ export default function Home() {
                                 <FileText className="w-5 h-5" />
                               </div>
                               <div className="min-w-0">
-                                <a
-                                  href={`${API_BASE}/api/download/${doc.id}`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="font-semibold text-sm hover:text-indigo-600 truncate block"
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleDownloadFile(doc.id, doc.name)
+                                  }
+                                  className="font-semibold text-sm hover:text-indigo-600 truncate block text-left"
                                 >
                                   {doc.name}
-                                </a>
+                                </button>
                                 <p className="text-xs text-slate-400 truncate mt-0.5">
                                   {doc.type.toUpperCase()} · ID{" "}
                                   {doc.id.slice(0, 8)}
@@ -1285,12 +1498,16 @@ export default function Home() {
                   }`}
                 >
                   <p className="font-medium">
-                    {activeTab === "favourites"
+                    {!isLoggedIn
+                      ? "Sign in to view your documents"
+                      : activeTab === "favourites"
                       ? "No favorite documents yet"
                       : "No documents found"}
                   </p>
                   <p className="text-xs text-slate-400 mt-1">
-                    {activeTab === "favourites"
+                    {!isLoggedIn
+                      ? "Use the Login tab to access your account from any device."
+                      : activeTab === "favourites"
                       ? "Click the heart icon next to any document to save it here."
                       : "Upload a document using the button in the top bar."}
                   </p>
@@ -1375,15 +1592,21 @@ export default function Home() {
                                     }`}
                                   />
                                 </button>
-                                <a
-                                  href={`${API_BASE}/api/download/${doc.id}`}
-                                  target="_blank"
-                                  rel="noreferrer"
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleDownloadFile(doc.id, doc.name)
+                                  }
+                                  disabled={downloadingId === doc.id}
                                   className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition"
                                 >
-                                  <Download className="w-3.5 h-3.5" />
+                                  {downloadingId === doc.id ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  ) : (
+                                    <Download className="w-3.5 h-3.5" />
+                                  )}
                                   Open
-                                </a>
+                                </button>
                                 <button
                                   onClick={() =>
                                     handleDeleteFile(doc.id, doc.name)
@@ -1491,14 +1714,15 @@ export default function Home() {
                                         }`}
                                       />
                                     </button>
-                                    <a
-                                      href={`${API_BASE}/api/download/${f.id}`}
-                                      target="_blank"
-                                      rel="noreferrer"
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleDownloadFile(f.id, f.name)
+                                      }
                                       className="p-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
                                     >
                                       <Download className="w-3.5 h-3.5" />
-                                    </a>
+                                    </button>
                                   </div>
                                 </div>
                               );
@@ -1771,8 +1995,8 @@ export default function Home() {
                     <div className="space-y-4">
                       <h3 className="text-lg font-bold">Storage Overview</h3>
                       <p className="text-sm text-slate-500">
-                        Files are stored in your Supabase Storage bucket and
-                        indexed in Pinecone.
+                        Files are stored in your Supabase Storage bucket under
+                        your user ID and indexed in Pinecone.
                       </p>
                       <div className="flex items-center justify-between text-sm font-medium">
                         <span>Used Space</span>
@@ -1794,8 +2018,8 @@ export default function Home() {
                     <div className="space-y-4">
                       <h3 className="text-lg font-bold">AI Preferences</h3>
                       <p className="text-sm text-slate-500">
-                        Semantic search retrieves top matching chunks from
-                        Pinecone and generates answers using Gemini.
+                        Semantic search filters chunks by your authenticated user
+                        ID in Pinecone and answers with Gemini.
                       </p>
                       <div className="text-sm space-y-2">
                         <p>
@@ -1922,12 +2146,12 @@ export default function Home() {
             <div className="p-8 max-w-xl mx-auto">
               <div className="mb-6">
                 <h2 className="text-2xl font-bold">
-                  {isLoggedIn ? "Account & Switch User" : "Sign In"}
+                  {authMode === "signup" ? "Create Account" : "Sign In"}
                 </h2>
                 <p className="text-sm text-slate-500 mt-0.5">
                   {isLoggedIn
-                    ? `Active account: ${profile.fullName} (${profile.email})`
-                    : "Sign in to switch users or access your workspace"}
+                    ? `Signed in as ${session?.user?.email || profile.email}`
+                    : "Sign in to access your cloud documents from any device"}
                 </p>
               </div>
 
@@ -1938,69 +2162,91 @@ export default function Home() {
                     : "bg-white border-slate-200/80"
                 }`}
               >
-                <div
-                  className={`p-3.5 rounded-xl border flex items-center justify-between ${
-                    isDarkResolved
-                      ? "bg-slate-800/70 border-slate-700"
-                      : "bg-slate-50 border-slate-200/70"
-                  }`}
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-10 h-10 rounded-full bg-indigo-600 text-white text-xs font-semibold flex items-center justify-center flex-shrink-0 overflow-hidden">
-                      {profile.photoDataUrl ? (
-                        <img
-                          src={profile.photoDataUrl}
-                          alt={profile.fullName}
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        getInitials(profile.fullName)
-                      )}
-                    </div>
+                <div className="inline-flex p-1 rounded-xl bg-slate-100 dark:bg-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode("signin");
+                      setLoginError("");
+                      setLoginMessage("");
+                    }}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition ${
+                      authMode === "signin"
+                        ? "bg-indigo-600 text-white"
+                        : "text-slate-500"
+                    }`}
+                  >
+                    Sign In
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode("signup");
+                      setLoginError("");
+                      setLoginMessage("");
+                    }}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition ${
+                      authMode === "signup"
+                        ? "bg-indigo-600 text-white"
+                        : "text-slate-500"
+                    }`}
+                  >
+                    Create Account
+                  </button>
+                </div>
+
+                {isLoggedIn && (
+                  <div
+                    className={`p-3.5 rounded-xl border flex items-center justify-between ${
+                      isDarkResolved
+                        ? "bg-slate-800/70 border-slate-700"
+                        : "bg-slate-50 border-slate-200/70"
+                    }`}
+                  >
                     <div className="min-w-0">
                       <p className="text-sm font-semibold truncate">
                         {profile.fullName}
                       </p>
                       <p className="text-xs text-slate-400 truncate">
-                        {profile.email}
+                        {session?.user?.email || profile.email}
                       </p>
                     </div>
+                    <span className="text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600">
+                      Active Session
+                    </span>
                   </div>
+                )}
 
-                  <span
-                    className={`text-xs font-medium px-2.5 py-1 rounded-full flex-shrink-0 ${
-                      isLoggedIn
-                        ? "bg-emerald-50 text-emerald-600"
-                        : "bg-slate-200/80 text-slate-600"
-                    }`}
-                  >
-                    {isLoggedIn ? "Signed In" : "Guest"}
-                  </span>
-                </div>
-
-                {loginNotice && (
+                {loginError && (
+                  <p className="text-xs font-medium text-rose-500">
+                    {loginError}
+                  </p>
+                )}
+                {loginMessage && (
                   <p className="text-xs font-medium text-emerald-600">
-                    {loginNotice}
+                    {loginMessage}
                   </p>
                 )}
 
-                <form onSubmit={handleLoginSubmit} className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">
-                      Full Name (optional)
-                    </label>
-                    <input
-                      type="text"
-                      value={loginName}
-                      onChange={(e) => setLoginName(e.target.value)}
-                      placeholder={profile.fullName}
-                      className={`w-full border rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
-                        isDarkResolved
-                          ? "bg-slate-800 border-slate-700 text-slate-100"
-                          : "bg-white border-slate-200 text-slate-900"
-                      }`}
-                    />
-                  </div>
+                <form onSubmit={handleAuthSubmit} className="space-y-4">
+                  {authMode === "signup" && (
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-500 mb-1.5">
+                        Full Name
+                      </label>
+                      <input
+                        type="text"
+                        value={loginName}
+                        onChange={(e) => setLoginName(e.target.value)}
+                        placeholder="Your full name"
+                        className={`w-full border rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
+                          isDarkResolved
+                            ? "bg-slate-800 border-slate-700 text-slate-100"
+                            : "bg-white border-slate-200 text-slate-900"
+                        }`}
+                      />
+                    </div>
+                  )}
 
                   <div>
                     <label className="block text-xs font-semibold text-slate-500 mb-1.5">
@@ -2011,7 +2257,7 @@ export default function Home() {
                       required
                       value={loginEmail}
                       onChange={(e) => setLoginEmail(e.target.value)}
-                      placeholder="user@example.com"
+                      placeholder="you@example.com"
                       className={`w-full border rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
                         isDarkResolved
                           ? "bg-slate-800 border-slate-700 text-slate-100"
@@ -2027,9 +2273,10 @@ export default function Home() {
                     <input
                       type="password"
                       required
+                      minLength={6}
                       value={loginPassword}
                       onChange={(e) => setLoginPassword(e.target.value)}
-                      placeholder="••••••••"
+                      placeholder="At least 6 characters"
                       className={`w-full border rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
                         isDarkResolved
                           ? "bg-slate-800 border-slate-700 text-slate-100"
@@ -2041,9 +2288,15 @@ export default function Home() {
                   <div className="flex items-center gap-3 pt-2">
                     <button
                       type="submit"
-                      className="px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-xs transition"
+                      disabled={authSubmitting}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 rounded-xl shadow-xs transition"
                     >
-                      {isLoggedIn ? "Switch User" : "Sign In"}
+                      {authSubmitting && (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      )}
+                      <span>
+                        {authMode === "signup" ? "Create Account" : "Sign In"}
+                      </span>
                     </button>
 
                     {isLoggedIn && (

@@ -122,6 +122,10 @@ export default function Home() {
   const [sortBy, setSortBy] = useState<SortOption>("newest");
   const [globalSearch, setGlobalSearch] = useState<string>("");
 
+  // Client-safe date & weekly upload states (avoid Date.now()/new Date() during prerender)
+  const [uploadedThisWeek, setUploadedThisWeek] = useState<number>(0);
+  const [todayFormatted, setTodayFormatted] = useState<string>("Overview");
+
   // File Storage States
   const [files, setFiles] = useState<StoredDoc[]>([]);
   const [isLoadingFiles, setIsLoadingFiles] = useState<boolean>(true);
@@ -162,6 +166,26 @@ export default function Home() {
   useEffect(() => {
     loadFiles(sortBy);
   }, [sortBy]);
+
+  useEffect(() => {
+    setTodayFormatted(
+      new Date().toLocaleDateString("en-US", {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+      })
+    );
+  }, []);
+
+  useEffect(() => {
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - sevenDaysMs;
+    const count = files.filter((f) => {
+      const t = new Date(f.uploadedAt).getTime();
+      return !isNaN(t) && t >= cutoff;
+    }).length;
+    setUploadedThisWeek(count);
+  }, [files]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -319,13 +343,6 @@ export default function Home() {
   );
   const favouriteCount = files.filter((f) => f.isFavorite).length;
 
-  const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  const uploadedThisWeek = files.filter((f) => {
-    const t = new Date(f.uploadedAt).getTime();
-    return !isNaN(t) && t >= oneWeekAgo;
-  }).length;
-
-  // Group documents into categories for the "Top Categories" widget
   const categoryCountsMap: Record<string, number> = {};
   files.forEach((f) => {
     const { label } = inferCategory(f.name, f.type);
@@ -346,12 +363,6 @@ export default function Home() {
       f.name.toLowerCase().includes(globalSearch.toLowerCase())
     );
 
-  const todayFormatted = new Date().toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-  });
-
   const tabTitleMap: Record<ActiveTab, string> = {
     dashboard: "Dashboard",
     drive: "All Documents",
@@ -361,7 +372,6 @@ export default function Home() {
 
   return (
     <div className="flex h-screen bg-[#F8F9FC] text-slate-900 font-sans">
-      {/* Hidden File Input */}
       <input
         type="file"
         ref={fileInputRef}
@@ -373,7 +383,6 @@ export default function Home() {
       {/* LEFT SIDEBAR */}
       <aside className="w-64 bg-white border-r border-slate-200/80 flex flex-col justify-between p-4">
         <div>
-          {/* Brand Logo */}
           <div className="flex items-center gap-3 px-2 py-2 mb-6">
             <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-sm">
               <Sparkles className="w-5 h-5" />
@@ -388,7 +397,6 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Navigation Items */}
           <nav className="space-y-1">
             <button
               onClick={() => setActiveTab("dashboard")}
@@ -475,7 +483,6 @@ export default function Home() {
           </nav>
         </div>
 
-        {/* Bottom Storage Widget */}
         <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4">
           <div className="flex items-center justify-between text-xs mb-2">
             <span className="text-slate-500 font-medium">Storage Used</span>
@@ -494,7 +501,6 @@ export default function Home() {
 
       {/* RIGHT MAIN SHELL */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* TOP HEADER BAR */}
         <header className="h-16 bg-white border-b border-slate-200/80 px-8 flex items-center justify-between gap-4">
           <div className="flex items-center gap-6 flex-1">
             <span className="font-semibold text-slate-800 text-sm">
@@ -540,12 +546,9 @@ export default function Home() {
           </div>
         </header>
 
-        {/* TAB VIEWPORT */}
         <main className="flex-1 overflow-y-auto">
           {activeTab === "dashboard" && (
-            /* ================= DASHBOARD VIEW ================= */
             <div className="p-8 max-w-7xl mx-auto space-y-6">
-              {/* Welcome Header */}
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div>
                   <h2 className="text-2xl font-bold text-slate-900">
@@ -566,9 +569,7 @@ export default function Home() {
                 </button>
               </div>
 
-              {/* 4 KPI STAT CARDS */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-                {/* Total Documents */}
                 <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs flex items-start justify-between">
                   <div>
                     <p className="text-sm font-medium text-slate-500">
@@ -589,7 +590,6 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* Documents Analyzed */}
                 <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs flex items-start justify-between">
                   <div>
                     <p className="text-sm font-medium text-slate-500">
@@ -610,7 +610,6 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* Categories */}
                 <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs flex items-start justify-between">
                   <div>
                     <p className="text-sm font-medium text-slate-500">
@@ -628,7 +627,6 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* Storage Used */}
                 <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs flex items-start justify-between">
                   <div>
                     <p className="text-sm font-medium text-slate-500">
@@ -647,9 +645,7 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* BOTTOM 2-COLUMN SECTION: RECENT DOCUMENTS + ANALYTICS */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Recent Documents (2/3 width) */}
                 <div className="lg:col-span-2 bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs">
                   <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-2">
@@ -690,7 +686,6 @@ export default function Home() {
                             key={doc.id}
                             className="flex items-center justify-between gap-4 p-3.5 rounded-xl border border-slate-100 hover:border-slate-200 hover:bg-slate-50/60 transition"
                           >
-                            {/* File Icon & Name */}
                             <div className="flex items-center gap-3.5 min-w-0 flex-1">
                               <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
                                 <FileText className="w-5 h-5" />
@@ -710,14 +705,12 @@ export default function Home() {
                               </div>
                             </div>
 
-                            {/* Category Badge */}
                             <span
                               className={`hidden sm:inline-block text-xs font-medium px-2.5 py-1 rounded-full ${cat.badgeClass}`}
                             >
                               {cat.label}
                             </span>
 
-                            {/* Date & Size */}
                             <div className="hidden md:block text-right text-xs">
                               <p className="text-slate-600 font-medium">
                                 {formatShortDate(doc.uploadedAt)}
@@ -727,13 +720,11 @@ export default function Home() {
                               </p>
                             </div>
 
-                            {/* Analyzed Status Pill */}
                             <span className="hidden sm:inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600">
                               <CheckCircle2 className="w-3 h-3" />
                               Analyzed
                             </span>
 
-                            {/* Favourite Heart */}
                             <button
                               onClick={() => handleToggleFavorite(doc.id)}
                               disabled={togglingFavId === doc.id}
@@ -759,9 +750,7 @@ export default function Home() {
                   )}
                 </div>
 
-                {/* Right Side Analytics Stack (1/3 width) */}
                 <div className="space-y-6">
-                  {/* AI Analysis Breakdown Card */}
                   <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs">
                     <div className="flex items-center gap-2 mb-5">
                       <Sparkles className="w-4 h-4 text-indigo-600" />
@@ -819,7 +808,6 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* Top Categories Card */}
                   <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs">
                     <div className="flex items-center gap-2 mb-4">
                       <TrendingUp className="w-4 h-4 text-indigo-600" />
@@ -856,7 +844,6 @@ export default function Home() {
           )}
 
           {(activeTab === "drive" || activeTab === "favourites") && (
-            /* ================= ALL DOCUMENTS & FAVORITES VIEW ================= */
             <div className="p-8 max-w-7xl mx-auto">
               <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
                 <div>
@@ -1021,7 +1008,6 @@ export default function Home() {
           )}
 
           {activeTab === "chat" && (
-            /* ================= AI SEARCH CHAT VIEW ================= */
             <div className="flex flex-col h-full">
               <div className="flex-1 p-6 overflow-y-auto space-y-4 max-w-4xl w-full mx-auto">
                 {messages.map((msg, idx) => (

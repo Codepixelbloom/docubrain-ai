@@ -20,7 +20,6 @@ import {
   Folder,
   HardDrive,
   CheckCircle2,
-  TrendingUp,
   ArrowRight,
   RefreshCw,
 } from "lucide-react";
@@ -348,9 +347,6 @@ export default function Home() {
     const { label } = inferCategory(f.name, f.type);
     categoryCountsMap[label] = (categoryCountsMap[label] || 0) + 1;
   });
-  const topCategories = Object.entries(categoryCountsMap)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5);
   const activeCategoriesCount = Object.keys(categoryCountsMap).length;
 
   const recentFiles = [...files]
@@ -750,7 +746,7 @@ export default function Home() {
                   )}
                 </div>
 
-                <div className="space-y-6">
+                <div>
                   <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs">
                     <div className="flex items-center gap-2 mb-5">
                       <Sparkles className="w-4 h-4 text-indigo-600" />
@@ -806,37 +802,6 @@ export default function Home() {
                         <div className="w-full h-2 bg-slate-100 rounded-full" />
                       </div>
                     </div>
-                  </div>
-
-                  <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs">
-                    <div className="flex items-center gap-2 mb-4">
-                      <TrendingUp className="w-4 h-4 text-indigo-600" />
-                      <h3 className="font-semibold text-slate-900">
-                        Top Categories
-                      </h3>
-                    </div>
-
-                    {topCategories.length === 0 ? (
-                      <p className="text-xs text-slate-400">
-                        Upload files to see category distribution.
-                      </p>
-                    ) : (
-                      <div className="space-y-3 text-sm">
-                        {topCategories.map(([catName, count]) => (
-                          <div
-                            key={catName}
-                            className="flex items-center justify-between py-1"
-                          >
-                            <span className="text-slate-700 font-medium">
-                              {catName}
-                            </span>
-                            <span className="text-xs text-slate-400 font-medium">
-                              {count} {count === 1 ? "doc" : "docs"}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
                   </div>
                 </div>
               </div>

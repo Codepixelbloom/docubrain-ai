@@ -41,14 +41,14 @@ if not PINECONE_API_KEY or not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         "Missing required environment variables: PINECONE_API_KEY, SUPABASE_URL, or SUPABASE_SERVICE_KEY"
     )
 
-# Initialize Pinecone, Supabase, and Gemini clients (12s timeout prevents infinite search hang)
+# Initialize Pinecone, Supabase, and Gemini clients (25s timeout)
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(PINECONE_INDEX_NAME)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 gemini_client = (
     genai.Client(
         api_key=GEMINI_API_KEY,
-        http_options=types.HttpOptions(timeout=12000),
+        http_options=types.HttpOptions(timeout=25000),
     )
     if GEMINI_API_KEY
     else None
@@ -93,10 +93,11 @@ async def upload_file(file: UploadFile = File(...)):
         filename = file.filename or "unknown.pdf"
         file_bytes = await file.read()
 
+        # Deterministic SHA-256 hash of file contents prevents duplicate storage & indexing
         file_id = hashlib.sha256(file_bytes).hexdigest()[:32]
         storage_path = f"{file_id}/{filename}"
 
-        # 1. Ensure raw file exists in Supabase Storage
+        # 1. Always ensure the raw file exists in Supabase Storage (upsert overwrites cleanly)
         supabase.storage.from_(SUPABASE_BUCKET).upload(
             path=storage_path,
             file=file_bytes,
@@ -240,7 +241,7 @@ async def search_files(request: QueryRequest):
                 f"Document Excerpts:\n{joined_context}"
             )
             answer = None
-            for model_name in ["gemini-2.5-flash-lite", "gemini-3.8-flash"]:
+            for model_name in ["gemini-3.5-flash-lite", "gemini-3.8-flash"]:
                 try:
                     llm_response = gemini_client.models.generate_content(
                         model=model_name,

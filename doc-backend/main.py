@@ -11,7 +11,6 @@ import PyPDF2
 from pinecone import Pinecone
 from supabase import create_client, Client
 
-# Automatically loads variables from doc-backend/.env locally
 load_dotenv()
 
 app = FastAPI()
@@ -24,9 +23,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Configuration (Reads from .env or Render Environment Variables) ---
+# --- Configuration ---
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "brain-ai-1024")
+PINECONE_NAMESPACE = "default"
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
@@ -45,26 +45,6 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 class QueryRequest(BaseModel):
     query: str
-
-
-def get_embeddings(texts: List[str], input_type: str = "passage") -> List[List[float]]:
-    all_embeddings = []
-    batch_size = 96
-    try:
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
-            res = pc.inference.embed(
-                model="multilingual-e5-large",
-                inputs=batch,
-                parameters={"input_type": input_type, "truncate": "END"},
-            )
-            all_embeddings.extend([item["values"] for item in res])
-        return all_embeddings
-    except Exception as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Pinecone embedding error: {str(e)}",
-        )
 
 
 def extract_text_from_pdf_bytes(file_bytes: bytes) -> str:
@@ -93,13 +73,13 @@ async def health_check():
 
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
-    file_id = str(uuid.uuid4())
-    filename = file.filename or "unknown.pdf"
-    storage_path = f"{file_id}/{filename}"
-    file_bytes = await file.read()
-
-    # 1. Upload raw file to Supabase Storage
     try:
+        file_id = str(uuid.uuid4())
+        filename = file.filename or "unknown.pdf"
+        storage_path = f"{file_id}/{filename}"
+        file_bytes = await file.read()
+
+        # 1. Upload raw file to Supabase Storage
         supabase.storage.from_(SUPABASE_BUCKET).upload(
             path=storage_path,
             file=file_bytes,
@@ -108,94 +88,118 @@ async def upload_file(file: UploadFile = File(...)):
                 "upsert": "false",
             },
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Supabase upload failed: {str(e)}")
 
-    # 2. Extract text from memory
-    if filename.lower().endswith(".pdf"):
-        extracted_text = extract_text_from_pdf_bytes(file_bytes)
-    else:
-        extracted_text = file_bytes.decode("utf-8", errors="ignore")
+        # 2. Extract text from memory
+        if filename.lower().endswith(".pdf"):
+            extracted_text = extract_text_from_pdf_bytes(file_bytes)
+        else:
+            extracted_text = file_bytes.decode("utf-8", errors="ignore")
 
-    # 3. Chunk, embed in batches, and upsert vectors + storage_path metadata to Pinecone
-    chunks = chunk_text(extracted_text)
-    if chunks:
-        embeddings = get_embeddings(chunks, input_type="passage")
-        vectors_to_upsert = []
-        for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
-            vectors_to_upsert.append(
+        # 3. Chunk and upsert documents in batches of 50 (Pinecone embeds chunk_text automatically)
+        chunks = chunk_text(extracted_text)
+        if chunks:
+            documents = [
                 {
-                    "id": f"{file_id}_chunk_{i}",
-                    "values": emb,
-                    "metadata": {
-                        "file_id": file_id,
-                        "filename": filename,
-                        "storage_path": storage_path,
-                        "text": chunk[:1000],
-                    },
+                    "_id": f"{file_id}_chunk_{i}",
+                    "chunk_text": chunk,
+                    "title": filename,
+                    "file_id": file_id,
+                    "filename": filename,
+                    "storage_path": storage_path,
                 }
-            )
-        for i in range(0, len(vectors_to_upsert), 100):
-            index.upsert(vectors=vectors_to_upsert[i : i + 100])
+                for i, chunk in enumerate(chunks)
+            ]
+            for i in range(0, len(documents), 50):
+                index.documents.upsert(
+                    namespace=PINECONE_NAMESPACE,
+                    documents=documents[i : i + 50],
+                )
 
-    return {"file_id": file_id, "filename": filename, "status": "indexed"}
+        return {"file_id": file_id, "filename": filename, "status": "indexed"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
 
 @app.post("/api/search")
 async def search_files(request: QueryRequest):
-    query_embedding = get_embeddings([request.query], input_type="query")[0]
-
-    results = index.query(
-        vector=query_embedding,
-        top_k=3,
-        include_metadata=True,
-    )
-
-    matched_files = []
-    seen_files = set()
-
-    for match in results.get("matches", []):
-        meta = match.get("metadata", {})
-        fid = meta.get("file_id")
-        if fid and fid not in seen_files:
-            seen_files.add(fid)
-            matched_files.append(
+    try:
+        results = index.documents.search(
+            namespace=PINECONE_NAMESPACE,
+            top_k=5,
+            score_by=[
                 {
-                    "id": fid,
-                    "name": meta.get("filename", "Unknown"),
-                    "relevanceSnippet": meta.get("text", "")[:140] + "...",
+                    "type": "embed",
+                    "field": "chunk_text",
+                    "query": request.query,
                 }
-            )
+            ],
+            include_fields=["file_id", "filename", "chunk_text"],
+        )
 
-    if not matched_files:
-        answer = f"I searched your files for '{request.query}', but found no matching topics."
-    else:
-        answer = f"I scanned your indexed files and found {len(matched_files)} document(s) matching your request:"
+        matched_files = []
+        seen_files = set()
 
-    return {
-        "answer": answer,
-        "matched_files": matched_files,
-    }
+        matches = getattr(results, "matches", None) or results.get("matches", [])
+        for match in matches:
+            fields = getattr(match, "fields", None) or match.get("fields", {})
+            if not isinstance(fields, dict):
+                fields = dict(fields)
+            fid = fields.get("file_id")
+            if fid and fid not in seen_files:
+                seen_files.add(fid)
+                matched_files.append(
+                    {
+                        "id": fid,
+                        "name": fields.get("filename", "Unknown"),
+                        "relevanceSnippet": fields.get("chunk_text", "")[:140] + "...",
+                    }
+                )
+
+        if not matched_files:
+            answer = f"I searched your files for '{request.query}', but found no matching topics."
+        else:
+            answer = f"I scanned your indexed files and found {len(matched_files)} document(s) matching your request:"
+
+        return {
+            "answer": answer,
+            "matched_files": matched_files,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
 
 @app.get("/api/download/{file_id}")
 async def download_file(file_id: str):
-    res = index.fetch(ids=[f"{file_id}_chunk_0"])
-    vectors = res.get("vectors", {})
-    chunk_data = vectors.get(f"{file_id}_chunk_0")
+    try:
+        res = index.documents.fetch(
+            namespace=PINECONE_NAMESPACE,
+            ids=[f"{file_id}_chunk_0"],
+        )
+        docs = getattr(res, "documents", None) or res.get("documents", {})
+        chunk_data = docs.get(f"{file_id}_chunk_0")
 
-    if not chunk_data:
-        raise HTTPException(status_code=404, detail="File metadata not found")
+        if not chunk_data:
+            raise HTTPException(status_code=404, detail="File metadata not found")
 
-    storage_path = chunk_data.get("metadata", {}).get("storage_path")
-    if not storage_path:
-        raise HTTPException(status_code=404, detail="Storage path missing")
+        fields = getattr(chunk_data, "fields", None) or chunk_data.get("fields", chunk_data)
+        if not isinstance(fields, dict):
+            fields = dict(fields)
 
-    signed = supabase.storage.from_(SUPABASE_BUCKET).create_signed_url(
-        storage_path, 600, {"download": True}
-    )
-    signed_url = signed.get("signedURL") or signed.get("signedUrl")
-    if not signed_url:
-        raise HTTPException(status_code=500, detail="Could not generate download URL")
+        storage_path = fields.get("storage_path")
+        if not storage_path:
+            raise HTTPException(status_code=404, detail="Storage path missing")
 
-    return RedirectResponse(url=signed_url)
+        signed = supabase.storage.from_(SUPABASE_BUCKET).create_signed_url(
+            storage_path, 600, {"download": True}
+        )
+        signed_url = signed.get("signedURL") or signed.get("signedUrl")
+        if not signed_url:
+            raise HTTPException(status_code=500, detail="Could not generate download URL")
+
+        return RedirectResponse(url=signed_url)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Download error: {str(e)}")

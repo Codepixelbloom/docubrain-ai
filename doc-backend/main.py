@@ -18,7 +18,7 @@ from google.genai import types
 
 load_dotenv()
 
-app = FastAPI()
+app = FastAPI(title="DocuBrain AI Backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,7 +28,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Configuration ---
+# --- Environment Configuration ---
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "brain-ai-1024")
 PINECONE_NAMESPACE = os.getenv("PINECONE_NAMESPACE", "default")
@@ -45,7 +45,7 @@ if not PINECONE_API_KEY or not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         "Missing required environment variables: PINECONE_API_KEY, SUPABASE_URL, or SUPABASE_SERVICE_KEY"
     )
 
-# Initialize Pinecone, Supabase, and Gemini clients
+# --- Initialize Clients ---
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(PINECONE_INDEX_NAME)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
@@ -63,6 +63,7 @@ class QueryRequest(BaseModel):
     query: str
 
 
+# --- Helper Utilities ---
 def to_plain_dict(obj: Any) -> dict:
     """Safely converts Pinecone SDK response/model objects into plain Python dicts."""
     if obj is None:
@@ -77,7 +78,16 @@ def to_plain_dict(obj: Any) -> dict:
         return dict(obj)
     except Exception:
         result = {}
-        for key in ("documents", "fields", "metadata", "result", "hits", "matches", "_score", "score"):
+        for key in (
+            "documents",
+            "fields",
+            "metadata",
+            "result",
+            "hits",
+            "matches",
+            "_score",
+            "score",
+        ):
             if hasattr(obj, key):
                 result[key] = getattr(obj, key)
         return result
@@ -128,7 +138,14 @@ def query_matches_filename(query: str, filename: str) -> bool:
         return True
 
     q_tokens = normalize_tokens(q_lower)
-    f_tokens = normalize_tokens(f_stem) - {"pdf", "docx", "txt", "doc", "file", "document"}
+    f_tokens = normalize_tokens(f_stem) - {
+        "pdf",
+        "docx",
+        "txt",
+        "doc",
+        "file",
+        "document",
+    }
     if not f_tokens:
         return False
     overlap = q_tokens & f_tokens
@@ -154,6 +171,7 @@ def is_summary_query(query: str) -> bool:
 
 
 def list_all_stored_files() -> List[dict]:
+    """Lists all stored files and metadata from Supabase Storage."""
     files = []
     try:
         folders = supabase.storage.from_(SUPABASE_BUCKET).list()
@@ -164,14 +182,27 @@ def list_all_stored_files() -> List[dict]:
             inner = supabase.storage.from_(SUPABASE_BUCKET).list(fid)
             for item in inner or []:
                 fname = item.get("name")
-                if fname:
-                    files.append({"id": fid, "name": fname})
+                if not fname:
+                    continue
+                meta = item.get("metadata") or {}
+                files.append(
+                    {
+                        "id": fid,
+                        "name": fname,
+                        "sizeBytes": meta.get("size", 0),
+                        "uploadedAt": item.get("created_at")
+                        or item.get("updated_at")
+                        or "",
+                        "type": os.path.splitext(fname)[1].lower().lstrip(".") or "file",
+                    }
+                )
     except Exception as e:
         print(f"STORAGE LIST ERROR: {e}")
     return files
 
 
 def fetch_chunks_for_file(file_id: str, max_chunks: int = 6) -> List[str]:
+    """Fetches the first N sequential chunks for a specific file_id from Pinecone."""
     chunk_ids = [f"{file_id}_chunk_{i}" for i in range(max_chunks)]
     fetched = index.documents.fetch(
         namespace=PINECONE_NAMESPACE,
@@ -186,13 +217,16 @@ def fetch_chunks_for_file(file_id: str, max_chunks: int = 6) -> List[str]:
         if not cdata:
             continue
         cdata_dict = to_plain_dict(cdata)
-        fields = to_plain_dict(cdata_dict.get("fields") or cdata_dict.get("metadata") or cdata_dict)
+        fields = to_plain_dict(
+            cdata_dict.get("fields") or cdata_dict.get("metadata") or cdata_dict
+        )
         text = str(fields.get("chunk_text", "")).strip()
         if text:
             texts.append(text)
     return texts
 
 
+# --- API Routes ---
 @app.get("/")
 async def health_check():
     return {
@@ -202,8 +236,28 @@ async def health_check():
     }
 
 
+@app.get("/api/files")
+async def get_all_files(sort_by: str = "newest"):
+    """Returns all uploaded files from Supabase Storage for the My Drive view."""
+    try:
+        files = list_all_stored_files()
+        if sort_by == "name":
+            files.sort(key=lambda x: x["name"].lower())
+        elif sort_by == "size":
+            files.sort(key=lambda x: x["sizeBytes"], reverse=True)
+        elif sort_by == "oldest":
+            files.sort(key=lambda x: x["uploadedAt"])
+        else:
+            files.sort(key=lambda x: x["uploadedAt"], reverse=True)
+        return {"files": files}
+    except Exception as e:
+        print(f"LIST FILES ERROR: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not list files: {str(e)}")
+
+
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
+    """Extracts text, stores the raw file in Supabase, and indexes chunks in Pinecone."""
     try:
         filename = file.filename or "unknown.pdf"
         file_bytes = await file.read()
@@ -211,6 +265,7 @@ async def upload_file(file: UploadFile = File(...)):
         file_id = hashlib.sha256(file_bytes).hexdigest()[:32]
         storage_path = f"{file_id}/{filename}"
 
+        # 1. Extract clean text BEFORE storing/indexing
         lower_name = filename.lower()
         if lower_name.endswith(".pdf"):
             extracted_text = extract_text_from_pdf_bytes(file_bytes)
@@ -222,7 +277,9 @@ async def upload_file(file: UploadFile = File(...)):
                     status_code=400,
                     detail=f"Could not parse DOCX file (ensure it is a valid .docx, not legacy .doc): {docx_err}",
                 )
-        elif lower_name.endswith((".txt", ".md", ".csv", ".py", ".js", ".ts", ".json")):
+        elif lower_name.endswith(
+            (".txt", ".md", ".csv", ".py", ".js", ".ts", ".json")
+        ):
             extracted_text = file_bytes.decode("utf-8", errors="ignore")
         else:
             raise HTTPException(
@@ -236,6 +293,9 @@ async def upload_file(file: UploadFile = File(...)):
                 detail="No readable text found in file (scanned image PDFs without OCR are not supported).",
             )
 
+        print(f"UPLOAD PARSED: {filename} -> {len(extracted_text)} characters")
+
+        # 2. Upload raw file to Supabase Storage
         supabase.storage.from_(SUPABASE_BUCKET).upload(
             path=storage_path,
             file=file_bytes,
@@ -245,6 +305,7 @@ async def upload_file(file: UploadFile = File(...)):
             },
         )
 
+        # 3. Chunk and upsert to Pinecone in batches of 50
         chunks = chunk_text(extracted_text)
         if chunks:
             documents = [
@@ -279,6 +340,7 @@ async def upload_file(file: UploadFile = File(...)):
 
 @app.post("/api/search")
 async def search_files(request: QueryRequest):
+    """Searches documents by filename, summary intent, or semantic vector similarity."""
     try:
         summary_mode = is_summary_query(request.query)
         stored_files = list_all_stored_files()
@@ -415,6 +477,7 @@ async def search_files(request: QueryRequest):
                 "matched_files": [],
             }
 
+        # D. Gemini RAG Synthesis & Strict File Relevance Filtering
         if gemini_client and context_blocks:
             joined_context = "\n\n---\n\n".join(context_blocks)
             prompt = (
@@ -476,6 +539,7 @@ async def search_files(request: QueryRequest):
 
 @app.get("/api/download/{file_id}")
 async def download_file(file_id: str):
+    """Generates a temporary signed download URL from Supabase Storage."""
     try:
         res = index.documents.fetch(
             namespace=PINECONE_NAMESPACE,
@@ -502,7 +566,9 @@ async def download_file(file_id: str):
         )
         signed_url = signed.get("signedURL") or signed.get("signedUrl")
         if not signed_url:
-            raise HTTPException(status_code=500, detail="Could not generate download URL")
+            raise HTTPException(
+                status_code=500, detail="Could not generate download URL"
+            )
 
         return RedirectResponse(url=signed_url)
     except HTTPException:
@@ -510,3 +576,32 @@ async def download_file(file_id: str):
     except Exception as e:
         print(f"DOWNLOAD ERROR: {e}")
         raise HTTPException(status_code=500, detail=f"Download error: {str(e)}")
+
+
+@app.delete("/api/files/{file_id}")
+async def delete_file(file_id: str):
+    """Deletes a file from both Supabase Storage and Pinecone."""
+    try:
+        inner = supabase.storage.from_(SUPABASE_BUCKET).list(file_id)
+        paths_to_remove = [
+            f"{file_id}/{item['name']}" for item in (inner or []) if item.get("name")
+        ]
+        if paths_to_remove:
+            supabase.storage.from_(SUPABASE_BUCKET).remove(paths_to_remove)
+
+        try:
+            index.documents.delete(
+                namespace=PINECONE_NAMESPACE,
+                filter={"file_id": {"$eq": file_id}},
+            )
+        except Exception:
+            chunk_ids = [f"{file_id}_chunk_{i}" for i in range(200)]
+            index.documents.delete(
+                namespace=PINECONE_NAMESPACE,
+                ids=chunk_ids,
+            )
+
+        return {"status": "deleted", "file_id": file_id}
+    except Exception as e:
+        print(f"DELETE FILE ERROR: {e}")
+        raise HTTPException(status_code=500, detail=f"Delete error: {str(e)}")

@@ -3,9 +3,9 @@ import io
 import re
 import json
 import hashlib
-from typing import List, Any, Set
+from typing import List, Any, Set, Optional
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -37,7 +37,6 @@ MIN_SIMILARITY_SCORE = float(os.getenv("MIN_SIMILARITY_SCORE", "0.25"))
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "docubrain-files")
-FAVOURITES_OBJECT_PATH = "_system/favourites.json"
 
 GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip()
 
@@ -64,11 +63,52 @@ class QueryRequest(BaseModel):
     query: str
 
 
-# --- Favourites Persistence Helpers ---
-def get_favourite_ids() -> Set[str]:
-    """Reads the list of favourited file IDs from Supabase Storage."""
+# --- Auth & Per-User Path Helpers ---
+def get_current_user(authorization: Optional[str] = Header(default=None)) -> dict:
+    """Verifies the Supabase JWT access token from Authorization: Bearer <token>."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=401, detail="Missing or invalid Authorization header"
+        )
+    token = authorization.split(" ", 1)[1].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Empty access token")
+
     try:
-        raw = supabase.storage.from_(SUPABASE_BUCKET).download(FAVOURITES_OBJECT_PATH)
+        user_resp = supabase.auth.get_user(token)
+        user = getattr(user_resp, "user", None)
+        if not user and isinstance(user_resp, dict):
+            user = user_resp.get("user")
+        user_id = getattr(user, "id", None) or (
+            user.get("id") if isinstance(user, dict) else None
+        )
+        email = getattr(user, "email", None) or (
+            user.get("email") if isinstance(user, dict) else ""
+        )
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid or expired session")
+        return {"id": str(user_id), "email": str(email or "")}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"AUTH VERIFY ERROR: {e}")
+        raise HTTPException(status_code=401, detail="Token verification failed")
+
+
+def user_favourites_path(user_id: str) -> str:
+    return f"{user_id}/_system/favourites.json"
+
+
+def user_file_folder(user_id: str, file_id: str) -> str:
+    return f"{user_id}/{file_id}"
+
+
+def get_favourite_ids(user_id: str) -> Set[str]:
+    """Reads the list of favourited file IDs for a specific user from Supabase Storage."""
+    try:
+        raw = supabase.storage.from_(SUPABASE_BUCKET).download(
+            user_favourites_path(user_id)
+        )
         if raw:
             data = json.loads(raw.decode("utf-8"))
             if isinstance(data, list):
@@ -78,11 +118,11 @@ def get_favourite_ids() -> Set[str]:
     return set()
 
 
-def save_favourite_ids(fav_ids: Set[str]) -> None:
-    """Saves the updated set of favourited file IDs to Supabase Storage."""
+def save_favourite_ids(user_id: str, fav_ids: Set[str]) -> None:
+    """Saves the updated set of favourited file IDs for a specific user."""
     payload = json.dumps(sorted(fav_ids)).encode("utf-8")
     supabase.storage.from_(SUPABASE_BUCKET).upload(
-        path=FAVOURITES_OBJECT_PATH,
+        path=user_favourites_path(user_id),
         file=payload,
         file_options={
             "content-type": "application/json",
@@ -198,17 +238,19 @@ def is_summary_query(query: str) -> bool:
     return any(kw in q for kw in summary_keywords)
 
 
-def list_all_stored_files() -> List[dict]:
-    """Lists all stored files and metadata from Supabase Storage."""
+def list_user_stored_files(user_id: str) -> List[dict]:
+    """Lists all stored files and metadata for a specific user from Supabase Storage."""
     files = []
-    fav_ids = get_favourite_ids()
+    fav_ids = get_favourite_ids(user_id)
     try:
-        folders = supabase.storage.from_(SUPABASE_BUCKET).list()
+        folders = supabase.storage.from_(SUPABASE_BUCKET).list(user_id)
         for folder in folders or []:
             fid = folder.get("name")
             if not fid or fid == "_system":
                 continue
-            inner = supabase.storage.from_(SUPABASE_BUCKET).list(fid)
+            inner = supabase.storage.from_(SUPABASE_BUCKET).list(
+                user_file_folder(user_id, fid)
+            )
             for item in inner or []:
                 fname = item.get("name")
                 if not fname:
@@ -227,13 +269,13 @@ def list_all_stored_files() -> List[dict]:
                     }
                 )
     except Exception as e:
-        print(f"STORAGE LIST ERROR: {e}")
+        print(f"STORAGE LIST ERROR ({user_id}): {e}")
     return files
 
 
-def fetch_chunks_for_file(file_id: str, max_chunks: int = 6) -> List[str]:
-    """Fetches the first N sequential chunks for a specific file_id from Pinecone."""
-    chunk_ids = [f"{file_id}_chunk_{i}" for i in range(max_chunks)]
+def fetch_chunks_for_file(user_id: str, file_id: str, max_chunks: int = 6) -> List[str]:
+    """Fetches sequential chunks for a specific file_id belonging to user_id."""
+    chunk_ids = [f"{user_id}_{file_id}_chunk_{i}" for i in range(max_chunks)]
     fetched = index.documents.fetch(
         namespace=PINECONE_NAMESPACE,
         ids=chunk_ids,
@@ -250,6 +292,8 @@ def fetch_chunks_for_file(file_id: str, max_chunks: int = 6) -> List[str]:
         fields = to_plain_dict(
             cdata_dict.get("fields") or cdata_dict.get("metadata") or cdata_dict
         )
+        if str(fields.get("user_id", "")) != user_id:
+            continue
         text = str(fields.get("chunk_text", "")).strip()
         if text:
             texts.append(text)
@@ -263,14 +307,17 @@ async def health_check():
         "status": "ok",
         "service": "DocuBrain AI Backend",
         "rag_enabled": bool(gemini_client),
+        "auth_required": True,
     }
 
 
 @app.get("/api/files")
-async def get_all_files(sort_by: str = "newest"):
-    """Returns all uploaded files from Supabase Storage for My Drive & Favourites."""
+async def get_all_files(
+    sort_by: str = "newest", current_user: dict = Depends(get_current_user)
+):
+    """Returns all uploaded files for the authenticated user."""
     try:
-        files = list_all_stored_files()
+        files = list_user_stored_files(current_user["id"])
         if sort_by == "name":
             files.sort(key=lambda x: x["name"].lower())
         elif sort_by == "size":
@@ -286,17 +333,20 @@ async def get_all_files(sort_by: str = "newest"):
 
 
 @app.post("/api/files/{file_id}/favourite")
-async def toggle_favourite(file_id: str):
-    """Toggles a document's favourite status and persists it in Supabase Storage."""
+async def toggle_favourite(
+    file_id: str, current_user: dict = Depends(get_current_user)
+):
+    """Toggles a user's document favourite status in Supabase Storage."""
     try:
-        fav_ids = get_favourite_ids()
+        user_id = current_user["id"]
+        fav_ids = get_favourite_ids(user_id)
         if file_id in fav_ids:
             fav_ids.remove(file_id)
             is_fav = False
         else:
             fav_ids.add(file_id)
             is_fav = True
-        save_favourite_ids(fav_ids)
+        save_favourite_ids(user_id, fav_ids)
         return {"file_id": file_id, "isFavorite": is_fav}
     except Exception as e:
         print(f"FAVOURITE TOGGLE ERROR: {e}")
@@ -306,14 +356,18 @@ async def toggle_favourite(file_id: str):
 
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
-    """Extracts text, stores the raw file in Supabase, and indexes chunks in Pinecone."""
+async def upload_file(
+    file: UploadFile = File(...), current_user: dict = Depends(get_current_user)
+):
+    """Extracts text, stores raw file under <user_id>/<file_id>/<filename>, and indexes with user_id."""
     try:
+        user_id = current_user["id"]
         filename = file.filename or "unknown.pdf"
         file_bytes = await file.read()
 
-        file_id = hashlib.sha256(file_bytes).hexdigest()[:32]
-        storage_path = f"{file_id}/{filename}"
+        content_hash = hashlib.sha256(file_bytes).hexdigest()[:24]
+        file_id = f"{user_id[:8]}_{content_hash}"
+        storage_path = f"{user_file_folder(user_id, file_id)}/{filename}"
 
         lower_name = filename.lower()
         if lower_name.endswith(".pdf"):
@@ -355,9 +409,10 @@ async def upload_file(file: UploadFile = File(...)):
         if chunks:
             documents = [
                 {
-                    "_id": f"{file_id}_chunk_{i}",
+                    "_id": f"{user_id}_{file_id}_chunk_{i}",
                     "chunk_text": f"Document Filename: {filename}\n\n{chunk}",
                     "title": filename,
+                    "user_id": user_id,
                     "file_id": file_id,
                     "filename": filename,
                     "storage_path": storage_path,
@@ -384,11 +439,14 @@ async def upload_file(file: UploadFile = File(...)):
 
 
 @app.post("/api/search")
-async def search_files(request: QueryRequest):
-    """Searches documents by filename, summary intent, or semantic vector similarity."""
+async def search_files(
+    request: QueryRequest, current_user: dict = Depends(get_current_user)
+):
+    """Searches only documents belonging to the authenticated user."""
     try:
+        user_id = current_user["id"]
         summary_mode = is_summary_query(request.query)
-        stored_files = list_all_stored_files()
+        stored_files = list_user_stored_files(user_id)
         named_files = [
             f for f in stored_files if query_matches_filename(request.query, f["name"])
         ]
@@ -403,7 +461,7 @@ async def search_files(request: QueryRequest):
                 fid = nf["id"]
                 fname = nf["name"]
                 try:
-                    texts = fetch_chunks_for_file(fid, max_chunks=6)
+                    texts = fetch_chunks_for_file(user_id, fid, max_chunks=6)
                     for text in texts:
                         chunks_per_file[fname] = chunks_per_file.get(fname, 0) + 1
                         context_blocks.append(f"\n{text[:1500]}")
@@ -426,7 +484,7 @@ async def search_files(request: QueryRequest):
                 fid = sf["id"]
                 fname = sf["name"]
                 try:
-                    texts = fetch_chunks_for_file(fid, max_chunks=3)
+                    texts = fetch_chunks_for_file(user_id, fid, max_chunks=3)
                     for text in texts:
                         chunks_per_file[fname] = chunks_per_file.get(fname, 0) + 1
                         context_blocks.append(f"\n{text[:1200]}")
@@ -445,19 +503,22 @@ async def search_files(request: QueryRequest):
                     print(f"SUMMARY FETCH ERROR ({fname}): {sum_err}")
 
         if not named_files and not summary_mode:
+            user_filter = {"user_id": {"$eq": user_id}}
             try:
                 results = index.documents.search(
                     namespace=PINECONE_NAMESPACE,
                     query={
                         "inputs": {"text": request.query},
                         "top_k": 12,
+                        "filter": user_filter,
                     },
-                    fields=["file_id", "filename", "chunk_text"],
+                    fields=["user_id", "file_id", "filename", "chunk_text"],
                 )
             except TypeError:
                 results = index.documents.search(
                     namespace=PINECONE_NAMESPACE,
                     top_k=12,
+                    filter=user_filter,
                     score_by=[
                         {
                             "type": "embed",
@@ -465,7 +526,7 @@ async def search_files(request: QueryRequest):
                             "query": request.query,
                         }
                     ],
-                    include_fields=["file_id", "filename", "chunk_text"],
+                    include_fields=["user_id", "file_id", "filename", "chunk_text"],
                 )
 
             res_dict = to_plain_dict(results)
@@ -491,6 +552,9 @@ async def search_files(request: QueryRequest):
                 fields = to_plain_dict(
                     hit_dict.get("fields") or hit_dict.get("metadata") or hit_dict
                 )
+
+                if str(fields.get("user_id", "")) != user_id:
+                    continue
 
                 fid = fields.get("file_id")
                 fname = fields.get("filename", "Unknown")
@@ -579,16 +643,19 @@ async def search_files(request: QueryRequest):
 
 
 @app.get("/api/download/{file_id}")
-async def download_file(file_id: str):
-    """Generates a temporary signed download URL from Supabase Storage."""
+async def download_file(
+    file_id: str, current_user: dict = Depends(get_current_user)
+):
+    """Generates a temporary signed download URL if the file belongs to current_user."""
     try:
+        user_id = current_user["id"]
         res = index.documents.fetch(
             namespace=PINECONE_NAMESPACE,
-            ids=[f"{file_id}_chunk_0"],
+            ids=[f"{user_id}_{file_id}_chunk_0"],
         )
         res_dict = to_plain_dict(res)
         docs = to_plain_dict(res_dict.get("documents"))
-        chunk_data = docs.get(f"{file_id}_chunk_0")
+        chunk_data = docs.get(f"{user_id}_{file_id}_chunk_0")
 
         if not chunk_data:
             raise HTTPException(status_code=404, detail="File metadata not found")
@@ -597,6 +664,9 @@ async def download_file(file_id: str):
         fields = to_plain_dict(
             chunk_dict.get("fields") or chunk_dict.get("metadata") or chunk_dict
         )
+
+        if str(fields.get("user_id", "")) != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
 
         storage_path = fields.get("storage_path")
         if not storage_path:
@@ -620,29 +690,32 @@ async def download_file(file_id: str):
 
 
 @app.delete("/api/files/{file_id}")
-async def delete_file(file_id: str):
-    """Deletes a file from Supabase Storage, Pinecone, and Favourites."""
+async def delete_file(
+    file_id: str, current_user: dict = Depends(get_current_user)
+):
+    """Deletes a file from Supabase Storage, Pinecone, and Favourites for current_user."""
     try:
-        inner = supabase.storage.from_(SUPABASE_BUCKET).list(file_id)
+        user_id = current_user["id"]
+        folder = user_file_folder(user_id, file_id)
+        inner = supabase.storage.from_(SUPABASE_BUCKET).list(folder)
         paths_to_remove = [
-            f"{file_id}/{item['name']}" for item in (inner or []) if item.get("name")
+            f"{folder}/{item['name']}" for item in (inner or []) if item.get("name")
         ]
         if paths_to_remove:
             supabase.storage.from_(SUPABASE_BUCKET).remove(paths_to_remove)
 
-        # Also clean up from favourites if present
-        fav_ids = get_favourite_ids()
+        fav_ids = get_favourite_ids(user_id)
         if file_id in fav_ids:
             fav_ids.remove(file_id)
-            save_favourite_ids(fav_ids)
+            save_favourite_ids(user_id, fav_ids)
 
         try:
             index.documents.delete(
                 namespace=PINECONE_NAMESPACE,
-                filter={"file_id": {"$eq": file_id}},
+                filter={"$and": [{"user_id": {"$eq": user_id}}, {"file_id": {"$eq": file_id}}]},
             )
         except Exception:
-            chunk_ids = [f"{file_id}_chunk_{i}" for i in range(200)]
+            chunk_ids = [f"{user_id}_{file_id}_chunk_{i}" for i in range(200)]
             index.documents.delete(
                 namespace=PINECONE_NAMESPACE,
                 ids=chunk_ids,

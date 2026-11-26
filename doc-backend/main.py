@@ -3,7 +3,7 @@ import io
 import re
 import json
 import hashlib
-from typing import List, Any
+from typing import List, Any, Set
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,6 +37,7 @@ MIN_SIMILARITY_SCORE = float(os.getenv("MIN_SIMILARITY_SCORE", "0.25"))
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "docubrain-files")
+FAVOURITES_OBJECT_PATH = "_system/favourites.json"
 
 GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip()
 
@@ -61,6 +62,33 @@ gemini_client = (
 
 class QueryRequest(BaseModel):
     query: str
+
+
+# --- Favourites Persistence Helpers ---
+def get_favourite_ids() -> Set[str]:
+    """Reads the list of favourited file IDs from Supabase Storage."""
+    try:
+        raw = supabase.storage.from_(SUPABASE_BUCKET).download(FAVOURITES_OBJECT_PATH)
+        if raw:
+            data = json.loads(raw.decode("utf-8"))
+            if isinstance(data, list):
+                return set(str(x) for x in data)
+    except Exception:
+        pass
+    return set()
+
+
+def save_favourite_ids(fav_ids: Set[str]) -> None:
+    """Saves the updated set of favourited file IDs to Supabase Storage."""
+    payload = json.dumps(sorted(fav_ids)).encode("utf-8")
+    supabase.storage.from_(SUPABASE_BUCKET).upload(
+        path=FAVOURITES_OBJECT_PATH,
+        file=payload,
+        file_options={
+            "content-type": "application/json",
+            "upsert": "true",
+        },
+    )
 
 
 # --- Helper Utilities ---
@@ -173,11 +201,12 @@ def is_summary_query(query: str) -> bool:
 def list_all_stored_files() -> List[dict]:
     """Lists all stored files and metadata from Supabase Storage."""
     files = []
+    fav_ids = get_favourite_ids()
     try:
         folders = supabase.storage.from_(SUPABASE_BUCKET).list()
         for folder in folders or []:
             fid = folder.get("name")
-            if not fid:
+            if not fid or fid == "_system":
                 continue
             inner = supabase.storage.from_(SUPABASE_BUCKET).list(fid)
             for item in inner or []:
@@ -194,6 +223,7 @@ def list_all_stored_files() -> List[dict]:
                         or item.get("updated_at")
                         or "",
                         "type": os.path.splitext(fname)[1].lower().lstrip(".") or "file",
+                        "isFavorite": fid in fav_ids,
                     }
                 )
     except Exception as e:
@@ -238,7 +268,7 @@ async def health_check():
 
 @app.get("/api/files")
 async def get_all_files(sort_by: str = "newest"):
-    """Returns all uploaded files from Supabase Storage for the My Drive view."""
+    """Returns all uploaded files from Supabase Storage for My Drive & Favourites."""
     try:
         files = list_all_stored_files()
         if sort_by == "name":
@@ -255,6 +285,26 @@ async def get_all_files(sort_by: str = "newest"):
         raise HTTPException(status_code=500, detail=f"Could not list files: {str(e)}")
 
 
+@app.post("/api/files/{file_id}/favourite")
+async def toggle_favourite(file_id: str):
+    """Toggles a document's favourite status and persists it in Supabase Storage."""
+    try:
+        fav_ids = get_favourite_ids()
+        if file_id in fav_ids:
+            fav_ids.remove(file_id)
+            is_fav = False
+        else:
+            fav_ids.add(file_id)
+            is_fav = True
+        save_favourite_ids(fav_ids)
+        return {"file_id": file_id, "isFavorite": is_fav}
+    except Exception as e:
+        print(f"FAVOURITE TOGGLE ERROR: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Could not update favourite: {str(e)}"
+        )
+
+
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
     """Extracts text, stores the raw file in Supabase, and indexes chunks in Pinecone."""
@@ -265,7 +315,6 @@ async def upload_file(file: UploadFile = File(...)):
         file_id = hashlib.sha256(file_bytes).hexdigest()[:32]
         storage_path = f"{file_id}/{filename}"
 
-        # 1. Extract clean text BEFORE storing/indexing
         lower_name = filename.lower()
         if lower_name.endswith(".pdf"):
             extracted_text = extract_text_from_pdf_bytes(file_bytes)
@@ -293,9 +342,6 @@ async def upload_file(file: UploadFile = File(...)):
                 detail="No readable text found in file (scanned image PDFs without OCR are not supported).",
             )
 
-        print(f"UPLOAD PARSED: {filename} -> {len(extracted_text)} characters")
-
-        # 2. Upload raw file to Supabase Storage
         supabase.storage.from_(SUPABASE_BUCKET).upload(
             path=storage_path,
             file=file_bytes,
@@ -305,7 +351,6 @@ async def upload_file(file: UploadFile = File(...)):
             },
         )
 
-        # 3. Chunk and upsert to Pinecone in batches of 50
         chunks = chunk_text(extracted_text)
         if chunks:
             documents = [
@@ -353,7 +398,6 @@ async def search_files(request: QueryRequest):
         context_blocks = []
         chunks_per_file = {}
 
-        # A. Direct fetch when searching or summarizing by filename
         if named_files:
             for nf in named_files:
                 fid = nf["id"]
@@ -377,7 +421,6 @@ async def search_files(request: QueryRequest):
                 except Exception as fetch_err:
                     print(f"DIRECT FETCH ERROR ({fname}): {fetch_err}")
 
-        # B. Broad summary across all stored documents when no specific filename is given
         if summary_mode and not named_files and stored_files:
             for sf in stored_files:
                 fid = sf["id"]
@@ -401,7 +444,6 @@ async def search_files(request: QueryRequest):
                 except Exception as sum_err:
                     print(f"SUMMARY FETCH ERROR ({fname}): {sum_err}")
 
-        # C. Semantic vector search for topic-based queries
         if not named_files and not summary_mode:
             try:
                 results = index.documents.search(
@@ -477,7 +519,6 @@ async def search_files(request: QueryRequest):
                 "matched_files": [],
             }
 
-        # D. Gemini RAG Synthesis & Strict File Relevance Filtering
         if gemini_client and context_blocks:
             joined_context = "\n\n---\n\n".join(context_blocks)
             prompt = (
@@ -580,7 +621,7 @@ async def download_file(file_id: str):
 
 @app.delete("/api/files/{file_id}")
 async def delete_file(file_id: str):
-    """Deletes a file from both Supabase Storage and Pinecone."""
+    """Deletes a file from Supabase Storage, Pinecone, and Favourites."""
     try:
         inner = supabase.storage.from_(SUPABASE_BUCKET).list(file_id)
         paths_to_remove = [
@@ -588,6 +629,12 @@ async def delete_file(file_id: str):
         ]
         if paths_to_remove:
             supabase.storage.from_(SUPABASE_BUCKET).remove(paths_to_remove)
+
+        # Also clean up from favourites if present
+        fav_ids = get_favourite_ids()
+        if file_id in fav_ids:
+            fav_ids.remove(file_id)
+            save_favourite_ids(fav_ids)
 
         try:
             index.documents.delete(

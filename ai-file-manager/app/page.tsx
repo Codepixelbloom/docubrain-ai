@@ -34,6 +34,8 @@ import {
   LogOut,
   LayoutGrid,
   List,
+  Menu,
+  X,
 } from "lucide-react";
 
 const API_BASE = (
@@ -152,6 +154,7 @@ export default function Home() {
 
   // Navigation & View States
   const [activeTab, setActiveTab] = useState<ActiveTab>("login");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [settingsSection, setSettingsSection] =
     useState<SettingsSection>("profile");
   const [sortBy, setSortBy] = useState<SortOption>("newest");
@@ -214,6 +217,7 @@ export default function Home() {
 
   const navigateProtectedTab = useCallback(
     (tab: ActiveTab) => {
+      setMobileMenuOpen(false);
       if (!isLoggedIn && isProtectedTab(tab)) {
         setActiveTab("login");
         setLoginError(
@@ -537,6 +541,7 @@ export default function Home() {
   };
 
   const handleLogout = async () => {
+    setMobileMenuOpen(false);
     setLoginError("");
     setLoginMessage("");
     if (supabase) {
@@ -715,6 +720,7 @@ export default function Home() {
       return;
     }
 
+    setMobileMenuOpen(false);
     setActiveTab("chat");
     setMessages((prev) => [...prev, { role: "user", content: trimmed }]);
     setIsSearching(true);
@@ -811,18 +817,245 @@ export default function Home() {
 
   const firstName = profile.fullName.trim().split(/\s+/)[0] || "there";
 
+  const renderSidebarContent = () => (
+    <>
+      <div>
+        <div className="flex items-center justify-between px-2 py-2 mb-6">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-sm">
+              <Sparkles className="w-5 h-5" />
+            </div>
+            <div>
+              <h1 className="font-bold text-base leading-tight">DocuBrain</h1>
+              <span className="text-[11px] font-semibold tracking-wider text-indigo-600 uppercase">
+                AI
+              </span>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setMobileMenuOpen(false)}
+            aria-label="Close navigation menu"
+            className="lg:hidden p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <nav className="space-y-1">
+          <button
+            type="button"
+            onClick={() => navigateProtectedTab("dashboard")}
+            className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
+              activeTab === "dashboard"
+                ? isDarkResolved
+                  ? "bg-indigo-950/80 text-indigo-300"
+                  : "bg-indigo-50 text-indigo-600"
+                : isDarkResolved
+                ? "text-slate-300 hover:bg-slate-800"
+                : "text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            <LayoutDashboard className="w-4 h-4 flex-shrink-0" />
+            <span>Dashboard</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              navigateProtectedTab("drive");
+              loadFiles(sortBy);
+            }}
+            className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
+              activeTab === "drive"
+                ? isDarkResolved
+                  ? "bg-indigo-950/80 text-indigo-300"
+                  : "bg-indigo-50 text-indigo-600"
+                : isDarkResolved
+                ? "text-slate-300 hover:bg-slate-800"
+                : "text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            <span className="flex items-center gap-3">
+              <Files className="w-4 h-4 flex-shrink-0" />
+              <span>All Documents</span>
+            </span>
+            <span
+              className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                isDarkResolved
+                  ? "bg-indigo-950 text-indigo-300"
+                  : "bg-indigo-100/70 text-indigo-600"
+              }`}
+            >
+              {files.length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              navigateProtectedTab("favourites");
+              loadFiles(sortBy);
+            }}
+            className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
+              activeTab === "favourites"
+                ? isDarkResolved
+                  ? "bg-indigo-950/80 text-indigo-300"
+                  : "bg-indigo-50 text-indigo-600"
+                : isDarkResolved
+                ? "text-slate-300 hover:bg-slate-800"
+                : "text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            <span className="flex items-center gap-3">
+              <Heart
+                className={`w-4 h-4 flex-shrink-0 ${
+                  activeTab === "favourites"
+                    ? "fill-rose-500 text-rose-500"
+                    : ""
+                }`}
+              />
+              <span>Favorites</span>
+            </span>
+            <span
+              className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                isDarkResolved
+                  ? "bg-indigo-950 text-indigo-300"
+                  : "bg-indigo-100/70 text-indigo-600"
+              }`}
+            >
+              {favouriteCount}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => navigateProtectedTab("chat")}
+            className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
+              activeTab === "chat"
+                ? isDarkResolved
+                  ? "bg-indigo-950/80 text-indigo-300"
+                  : "bg-indigo-50 text-indigo-600"
+                : isDarkResolved
+                ? "text-slate-300 hover:bg-slate-800"
+                : "text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            <Search className="w-4 h-4 flex-shrink-0" />
+            <span>AI Search</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setMobileMenuOpen(false);
+              fileInputRef.current?.click();
+            }}
+            disabled={isUploading}
+            className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
+              isDarkResolved
+                ? "text-slate-300 hover:bg-slate-800"
+                : "text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            {isUploading ? (
+              <Loader2 className="w-4 h-4 animate-spin text-indigo-600 flex-shrink-0" />
+            ) : (
+              <Upload className="w-4 h-4 flex-shrink-0" />
+            )}
+            <span className="truncate">
+              {isUploading
+                ? uploadProgressText || "Uploading..."
+                : "Upload / Import"}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => navigateProtectedTab("settings")}
+            className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
+              activeTab === "settings"
+                ? isDarkResolved
+                  ? "bg-indigo-950/80 text-indigo-300"
+                  : "bg-indigo-50 text-indigo-600"
+                : isDarkResolved
+                ? "text-slate-300 hover:bg-slate-800"
+                : "text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            <Settings className="w-4 h-4 flex-shrink-0" />
+            <span>Settings</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleLogout}
+            className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
+              isDarkResolved
+                ? "text-slate-300 hover:bg-slate-800"
+                : "text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            <LogOut className="w-4 h-4 flex-shrink-0" />
+            <span>Sign Out</span>
+          </button>
+        </nav>
+      </div>
+
+      <div
+        className={`border rounded-2xl p-4 mt-6 transition-colors ${
+          isDarkResolved
+            ? "bg-slate-800/70 border-slate-700/80"
+            : "bg-slate-50 border-slate-200/80"
+        }`}
+      >
+        <div className="flex items-center justify-between text-xs gap-2 mb-2">
+          <span
+            className={
+              isDarkResolved
+                ? "text-slate-400 font-medium"
+                : "text-slate-500 font-medium"
+            }
+          >
+            Storage Used
+          </span>
+          <span
+            className={
+              isDarkResolved
+                ? "font-semibold text-slate-200"
+                : "font-semibold text-slate-700"
+            }
+          >
+            {formatBytes(totalBytesUsed)} / 100 MB
+          </span>
+        </div>
+        <div
+          className={`w-full h-2 rounded-full overflow-hidden ${
+            isDarkResolved ? "bg-slate-700" : "bg-slate-200"
+          }`}
+        >
+          <div
+            className="h-full bg-indigo-600 rounded-full transition-all duration-300"
+            style={{ width: `${Math.max(4, storagePercent)}%` }}
+          />
+        </div>
+      </div>
+    </>
+  );
+
   // Gate everything behind login first: no profile, settings, or workspace access before sign-in
   if (!authReady || !isLoggedIn) {
     return (
       <div
-        className={`flex min-h-screen font-sans transition-colors items-center justify-center p-6 ${
+        className={`flex min-h-dvh font-sans transition-colors items-center justify-center p-4 sm:p-6 ${
           isDarkResolved
             ? "bg-slate-950 text-slate-100"
             : "bg-[#F8F9FC] text-slate-900"
         }`}
       >
         <div className="w-full max-w-xl">
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-sm">
                 <Sparkles className="w-5 h-5" />
@@ -866,7 +1099,7 @@ export default function Home() {
           ) : (
             <div>
               <div className="mb-6">
-                <h2 className="text-2xl font-bold">
+                <h2 className="text-xl sm:text-2xl font-bold">
                   {authMode === "signup" ? "Create Account" : "Sign In"}
                 </h2>
                 <p className="text-sm text-slate-500 mt-0.5">
@@ -876,7 +1109,7 @@ export default function Home() {
               </div>
 
               <div
-                className={`border rounded-2xl p-6 shadow-xs space-y-5 ${
+                className={`border rounded-2xl p-5 sm:p-6 shadow-xs space-y-5 ${
                   isDarkResolved
                     ? "bg-slate-900 border-slate-800"
                     : "bg-white border-slate-200/80"
@@ -987,7 +1220,7 @@ export default function Home() {
                     <button
                       type="submit"
                       disabled={authSubmitting}
-                      className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 rounded-xl shadow-xs transition"
+                      className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 rounded-xl shadow-xs transition"
                     >
                       {authSubmitting && (
                         <Loader2 className="w-4 h-4 animate-spin" />
@@ -1008,7 +1241,7 @@ export default function Home() {
 
   return (
     <div
-      className={`flex h-screen font-sans transition-colors ${
+      className={`flex min-h-dvh lg:h-dvh font-sans transition-colors ${
         isDarkResolved
           ? "bg-slate-950 text-slate-100"
           : "bg-[#F8F9FC] text-slate-900"
@@ -1030,234 +1263,68 @@ export default function Home() {
         accept="image/*"
       />
 
-      {/* LEFT SIDEBAR */}
+      {/* DESKTOP LEFT SIDEBAR */}
       <aside
-        className={`w-64 flex-shrink-0 border-r flex flex-col justify-between p-4 transition-colors ${
+        className={`hidden lg:flex w-64 flex-shrink-0 border-r flex-col justify-between p-4 overflow-y-auto transition-colors ${
           isDarkResolved
             ? "bg-slate-900 border-slate-800"
             : "bg-white border-slate-200/80"
         }`}
       >
-        <div>
-          <div className="flex items-center gap-3 px-2 py-2 mb-6">
-            <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-sm">
-              <Sparkles className="w-5 h-5" />
-            </div>
-            <div>
-              <h1 className="font-bold text-base leading-tight">DocuBrain</h1>
-              <span className="text-[11px] font-semibold tracking-wider text-indigo-600 uppercase">
-                AI
-              </span>
-            </div>
-          </div>
-
-          <nav className="space-y-1">
-            <button
-              onClick={() => navigateProtectedTab("dashboard")}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
-                activeTab === "dashboard"
-                  ? isDarkResolved
-                    ? "bg-indigo-950/80 text-indigo-300"
-                    : "bg-indigo-50 text-indigo-600"
-                  : isDarkResolved
-                  ? "text-slate-300 hover:bg-slate-800"
-                  : "text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              <LayoutDashboard className="w-4 h-4" />
-              <span>Dashboard</span>
-            </button>
-
-            <button
-              onClick={() => {
-                navigateProtectedTab("drive");
-                loadFiles(sortBy);
-              }}
-              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
-                activeTab === "drive"
-                  ? isDarkResolved
-                    ? "bg-indigo-950/80 text-indigo-300"
-                    : "bg-indigo-50 text-indigo-600"
-                  : isDarkResolved
-                  ? "text-slate-300 hover:bg-slate-800"
-                  : "text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              <span className="flex items-center gap-3">
-                <Files className="w-4 h-4" />
-                <span>All Documents</span>
-              </span>
-              <span
-                className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
-                  isDarkResolved
-                    ? "bg-indigo-950 text-indigo-300"
-                    : "bg-indigo-100/70 text-indigo-600"
-                }`}
-              >
-                {files.length}
-              </span>
-            </button>
-
-            <button
-              onClick={() => {
-                navigateProtectedTab("favourites");
-                loadFiles(sortBy);
-              }}
-              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
-                activeTab === "favourites"
-                  ? isDarkResolved
-                    ? "bg-indigo-950/80 text-indigo-300"
-                    : "bg-indigo-50 text-indigo-600"
-                  : isDarkResolved
-                  ? "text-slate-300 hover:bg-slate-800"
-                  : "text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              <span className="flex items-center gap-3">
-                <Heart
-                  className={`w-4 h-4 ${
-                    activeTab === "favourites"
-                      ? "fill-rose-500 text-rose-500"
-                      : ""
-                  }`}
-                />
-                <span>Favorites</span>
-              </span>
-              <span
-                className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
-                  isDarkResolved
-                    ? "bg-indigo-950 text-indigo-300"
-                    : "bg-indigo-100/70 text-indigo-600"
-                }`}
-              >
-                {favouriteCount}
-              </span>
-            </button>
-
-            <button
-              onClick={() => navigateProtectedTab("chat")}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
-                activeTab === "chat"
-                  ? isDarkResolved
-                    ? "bg-indigo-950/80 text-indigo-300"
-                    : "bg-indigo-50 text-indigo-600"
-                  : isDarkResolved
-                  ? "text-slate-300 hover:bg-slate-800"
-                  : "text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              <Search className="w-4 h-4" />
-              <span>AI Search</span>
-            </button>
-
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isUploading}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
-                isDarkResolved
-                  ? "text-slate-300 hover:bg-slate-800"
-                  : "text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              {isUploading ? (
-                <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
-              ) : (
-                <Upload className="w-4 h-4" />
-              )}
-              <span>
-                {isUploading
-                  ? uploadProgressText || "Uploading..."
-                  : "Upload / Import"}
-              </span>
-            </button>
-
-            <button
-              onClick={() => navigateProtectedTab("settings")}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
-                activeTab === "settings"
-                  ? isDarkResolved
-                    ? "bg-indigo-950/80 text-indigo-300"
-                    : "bg-indigo-50 text-indigo-600"
-                  : isDarkResolved
-                  ? "text-slate-300 hover:bg-slate-800"
-                  : "text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              <Settings className="w-4 h-4" />
-              <span>Settings</span>
-            </button>
-
-            <button
-              onClick={handleLogout}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
-                isDarkResolved
-                  ? "text-slate-300 hover:bg-slate-800"
-                  : "text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              <LogOut className="w-4 h-4" />
-              <span>Sign Out</span>
-            </button>
-          </nav>
-        </div>
-
-        <div
-          className={`border rounded-2xl p-4 transition-colors ${
-            isDarkResolved
-              ? "bg-slate-800/70 border-slate-700/80"
-              : "bg-slate-50 border-slate-200/80"
-          }`}
-        >
-          <div className="flex items-center justify-between text-xs mb-2">
-            <span
-              className={
-                isDarkResolved
-                  ? "text-slate-400 font-medium"
-                  : "text-slate-500 font-medium"
-              }
-            >
-              Storage Used
-            </span>
-            <span
-              className={
-                isDarkResolved
-                  ? "font-semibold text-slate-200"
-                  : "font-semibold text-slate-700"
-              }
-            >
-              {formatBytes(totalBytesUsed)} / 100 MB
-            </span>
-          </div>
-          <div
-            className={`w-full h-2 rounded-full overflow-hidden ${
-              isDarkResolved ? "bg-slate-700" : "bg-slate-200"
-            }`}
-          >
-            <div
-              className="h-full bg-indigo-600 rounded-full transition-all duration-300"
-              style={{ width: `${Math.max(4, storagePercent)}%` }}
-            />
-          </div>
-        </div>
+        {renderSidebarContent()}
       </aside>
 
+      {/* MOBILE / TABLET DRAWER SIDEBAR */}
+      {mobileMenuOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden flex">
+          <button
+            type="button"
+            aria-label="Close navigation backdrop"
+            onClick={() => setMobileMenuOpen(false)}
+            className="fixed inset-0 bg-slate-950/50 backdrop-blur-[1px]"
+          />
+          <aside
+            className={`relative z-10 w-72 max-w-[85vw] h-full border-r flex flex-col justify-between p-4 overflow-y-auto shadow-xl transition-colors ${
+              isDarkResolved
+                ? "bg-slate-900 border-slate-800"
+                : "bg-white border-slate-200/80"
+            }`}
+          >
+            {renderSidebarContent()}
+          </aside>
+        </div>
+      )}
+
       {/* RIGHT MAIN SHELL */}
-      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+      <div className="flex-1 min-w-0 flex flex-col lg:overflow-hidden">
         <header
-          className={`h-16 border-b px-8 flex items-center justify-between gap-4 transition-colors ${
+          className={`min-h-16 border-b px-4 sm:px-6 lg:px-8 py-2.5 flex flex-wrap md:flex-nowrap items-center justify-between gap-3 transition-colors ${
             isDarkResolved
               ? "bg-slate-900 border-slate-800"
               : "bg-white border-slate-200/80"
           }`}
         >
-          <div className="flex items-center gap-6 flex-1 min-w-0">
+          <div className="flex items-center gap-3 sm:gap-5 flex-1 min-w-0 w-full md:w-auto">
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(true)}
+              aria-label="Open navigation menu"
+              className={`lg:hidden p-2 rounded-xl border transition flex-shrink-0 ${
+                isDarkResolved
+                  ? "border-slate-700 text-slate-200 hover:bg-slate-800"
+                  : "border-slate-200 text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              <Menu className="w-4 h-4" />
+            </button>
+
             <span className="font-semibold text-sm whitespace-nowrap">
               {tabTitleMap[activeTab]}
             </span>
 
             <form
               onSubmit={handleTopSearchSubmit}
-              className="relative w-full max-w-sm"
+              className="relative flex-1 max-w-full sm:max-w-sm"
             >
               <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
@@ -1267,35 +1334,37 @@ export default function Home() {
                 placeholder="Search documents..."
                 className={`w-full border border-transparent focus:border-indigo-400 rounded-xl pl-10 pr-4 py-2 text-sm outline-none transition ${
                   isDarkResolved
-                    ? "bg-slate-800 text-slate-100 focus:bg-slate-900"
+                    ? "bg-slate-800 text-slate-100 focus:bg-slate-950"
                     : "bg-slate-100/80 text-slate-900 focus:bg-white"
                 }`}
               />
             </form>
           </div>
 
-          <div className="flex items-center gap-3 flex-shrink-0">
+          <div className="flex items-center justify-end gap-2 sm:gap-3 w-full md:w-auto flex-shrink-0">
             <button
+              type="button"
               onClick={() => navigateProtectedTab("chat")}
-              className={`flex items-center gap-2 px-3.5 py-2 text-sm font-medium rounded-xl transition ${
+              className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-3.5 py-2 text-xs sm:text-sm font-medium rounded-xl transition ${
                 isDarkResolved
                   ? "text-indigo-300 bg-indigo-950/80 hover:bg-indigo-900/70"
                   : "text-indigo-600 bg-indigo-50 hover:bg-indigo-100"
               }`}
             >
-              <Sparkles className="w-4 h-4" />
+              <Sparkles className="w-4 h-4 flex-shrink-0" />
               <span>AI Search</span>
             </button>
 
             <button
+              type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={isUploading}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 rounded-xl shadow-sm transition"
+              className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 rounded-xl shadow-sm transition"
             >
               {isUploading ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
+                <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
               ) : (
-                <Upload className="w-4 h-4" />
+                <Upload className="w-4 h-4 flex-shrink-0" />
               )}
               <span>
                 {isUploading ? uploadProgressText || "Indexing..." : "Upload"}
@@ -1303,12 +1372,13 @@ export default function Home() {
             </button>
 
             <button
+              type="button"
               onClick={() => {
                 setSettingsSection("profile");
                 navigateProtectedTab("settings");
               }}
               title={`${profile.fullName} (${profile.email})`}
-              className="w-9 h-9 rounded-full bg-indigo-600 text-white text-xs font-semibold flex items-center justify-center overflow-hidden shadow-xs hover:ring-2 hover:ring-indigo-400 transition"
+              className="w-9 h-9 rounded-full bg-indigo-600 text-white text-xs font-semibold flex items-center justify-center overflow-hidden shadow-xs hover:ring-2 hover:ring-indigo-400 transition flex-shrink-0"
             >
               {profile.photoDataUrl ? (
                 <img
@@ -1323,22 +1393,23 @@ export default function Home() {
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 lg:overflow-y-auto">
           {activeTab === "dashboard" && (
-            <div className="p-8 max-w-7xl mx-auto space-y-6">
+            <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div>
-                  <h2 className="text-2xl font-bold">Dashboard</h2>
-                  <p className="text-sm text-slate-500 mt-0.5">
+                  <h2 className="text-xl sm:text-2xl font-bold">Dashboard</h2>
+                  <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
                     Welcome back, {firstName} · {todayFormatted}
                   </p>
                 </div>
 
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 w-full sm:w-auto">
                   <button
+                    type="button"
                     onClick={() => fileInputRef.current?.click()}
                     disabled={isUploading}
-                    className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-sm transition"
+                    className="w-full sm:w-auto justify-center flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-sm transition"
                   >
                     <Upload className="w-4 h-4" />
                     <span>
@@ -1350,7 +1421,7 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-4 gap-4 sm:gap-5">
                 <div
                   className={`border rounded-2xl p-5 shadow-xs flex items-start justify-between ${
                     isDarkResolved
@@ -1362,7 +1433,9 @@ export default function Home() {
                     <p className="text-sm font-medium text-slate-500">
                       Total Documents
                     </p>
-                    <p className="text-3xl font-bold mt-2">{files.length}</p>
+                    <p className="text-2xl sm:text-3xl font-bold mt-2">
+                      {files.length}
+                    </p>
                     <p className="text-xs text-slate-400 mt-1">
                       in your library
                     </p>
@@ -1370,7 +1443,7 @@ export default function Home() {
                       +{uploadedThisWeek} this week
                     </p>
                   </div>
-                  <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center flex-shrink-0">
                     <Files className="w-5 h-5" />
                   </div>
                 </div>
@@ -1386,7 +1459,9 @@ export default function Home() {
                     <p className="text-sm font-medium text-slate-500">
                       Docs Analyzed
                     </p>
-                    <p className="text-3xl font-bold mt-2">{files.length}</p>
+                    <p className="text-2xl sm:text-3xl font-bold mt-2">
+                      {files.length}
+                    </p>
                     <p className="text-xs text-slate-400 mt-1">
                       100% success rate
                     </p>
@@ -1394,7 +1469,7 @@ export default function Home() {
                       +{files.length} indexed in Pinecone
                     </p>
                   </div>
-                  <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center flex-shrink-0">
                     <Sparkles className="w-5 h-5" />
                   </div>
                 </div>
@@ -1410,14 +1485,14 @@ export default function Home() {
                     <p className="text-sm font-medium text-slate-500">
                       File Formats
                     </p>
-                    <p className="text-3xl font-bold mt-2">
+                    <p className="text-2xl sm:text-3xl font-bold mt-2">
                       {uniqueExtensionsCount}
                     </p>
                     <p className="text-xs text-slate-400 mt-1">
                       supported types
                     </p>
                   </div>
-                  <div className="w-10 h-10 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center">
+                  <div className="w-10 h-10 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center flex-shrink-0">
                     <Folder className="w-5 h-5" />
                   </div>
                 </div>
@@ -1433,14 +1508,14 @@ export default function Home() {
                     <p className="text-sm font-medium text-slate-500">
                       Storage Used
                     </p>
-                    <p className="text-3xl font-bold mt-2">
+                    <p className="text-2xl sm:text-3xl font-bold mt-2">
                       {formatBytes(totalBytesUsed)}
                     </p>
                     <p className="text-xs text-slate-400 mt-1">
                       of 100 MB free
                     </p>
                   </div>
-                  <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+                  <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center flex-shrink-0">
                     <HardDrive className="w-5 h-5" />
                   </div>
                 </div>
@@ -1448,7 +1523,7 @@ export default function Home() {
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div
-                  className={`lg:col-span-2 border rounded-2xl p-6 shadow-xs ${
+                  className={`lg:col-span-2 border rounded-2xl p-5 sm:p-6 shadow-xs ${
                     isDarkResolved
                       ? "bg-slate-900 border-slate-800"
                       : "bg-white border-slate-200/80"
@@ -1460,6 +1535,7 @@ export default function Home() {
                       <h3 className="font-semibold">Recent Documents</h3>
                     </div>
                     <button
+                      type="button"
                       onClick={() => navigateProtectedTab("drive")}
                       className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
                     >
@@ -1487,13 +1563,13 @@ export default function Home() {
                       {recentFiles.map((doc) => (
                         <div
                           key={doc.id}
-                          className={`flex items-center justify-between gap-4 p-3.5 rounded-xl border transition ${
+                          className={`flex items-center justify-between gap-3 sm:gap-4 p-3.5 rounded-xl border transition ${
                             isDarkResolved
                               ? "border-slate-800 hover:bg-slate-800/60"
                               : "border-slate-100 hover:border-slate-200 hover:bg-slate-50/60"
                           }`}
                         >
-                          <div className="flex items-center gap-3.5 min-w-0 flex-1">
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
                             <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
                               <FileText className="w-5 h-5" />
                             </div>
@@ -1514,12 +1590,13 @@ export default function Home() {
                             </div>
                           </div>
 
-                          <span className="hidden sm:inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600">
+                          <span className="hidden sm:inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600 flex-shrink-0">
                             <CheckCircle2 className="w-3 h-3" />
                             Analyzed
                           </span>
 
                           <button
+                            type="button"
                             onClick={() => handleToggleFavorite(doc.id)}
                             disabled={togglingFavId === doc.id}
                             title={
@@ -1527,7 +1604,7 @@ export default function Home() {
                                 ? "Remove from Favorites"
                                 : "Add to Favorites"
                             }
-                            className="p-1.5 rounded-lg hover:bg-rose-50 transition"
+                            className="p-1.5 rounded-lg hover:bg-rose-50 transition flex-shrink-0"
                           >
                             <Heart
                               className={`w-4 h-4 ${
@@ -1545,7 +1622,7 @@ export default function Home() {
 
                 <div>
                   <div
-                    className={`border rounded-2xl p-6 shadow-xs ${
+                    className={`border rounded-2xl p-5 sm:p-6 shadow-xs ${
                       isDarkResolved
                         ? "bg-slate-900 border-slate-800"
                         : "bg-white border-slate-200/80"
@@ -1610,22 +1687,22 @@ export default function Home() {
           )}
 
           {(activeTab === "drive" || activeTab === "favourites") && (
-            <div className="p-8 max-w-7xl mx-auto">
+            <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto">
               <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
                 <div>
-                  <h2 className="text-2xl font-bold">
+                  <h2 className="text-xl sm:text-2xl font-bold">
                     {activeTab === "favourites"
                       ? `Favorites (${displayedListFiles.length})`
                       : `All Documents (${displayedListFiles.length})`}
                   </h2>
-                  <p className="text-sm text-slate-500 mt-0.5">
+                  <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
                     {activeTab === "favourites"
                       ? "Your starred documents pinned for quick access"
                       : "All uploaded and indexed files in your cloud storage"}
                   </p>
                 </div>
 
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                   {/* List / Tiles View Toggle */}
                   <div
                     className={`inline-flex p-1 rounded-xl border ${
@@ -1671,7 +1748,7 @@ export default function Home() {
                     <select
                       value={sortBy}
                       onChange={(e) => setSortBy(e.target.value as SortOption)}
-                      className={`border rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 ${
+                      className={`border rounded-xl px-3 py-2 text-xs sm:text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
                         isDarkResolved
                           ? "bg-slate-900 border-slate-700 text-slate-200"
                           : "bg-white border-slate-200 text-slate-700"
@@ -1685,9 +1762,10 @@ export default function Home() {
                   </div>
 
                   <button
+                    type="button"
                     onClick={() => loadFiles(sortBy)}
                     title="Refresh"
-                    className={`p-2.5 border rounded-xl transition ${
+                    className={`p-2 sm:p-2.5 border rounded-xl transition ${
                       isDarkResolved
                         ? "bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800"
                         : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
@@ -1709,7 +1787,7 @@ export default function Home() {
                 </div>
               ) : displayedListFiles.length === 0 ? (
                 <div
-                  className={`text-center py-16 border border-dashed rounded-2xl ${
+                  className={`text-center py-16 px-4 border border-dashed rounded-2xl ${
                     isDarkResolved
                       ? "bg-slate-900 border-slate-800"
                       : "bg-white border-slate-300"
@@ -1727,7 +1805,7 @@ export default function Home() {
                   </p>
                 </div>
               ) : viewFormat === "tiles" ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
                   {displayedListFiles.map((doc) => (
                     <div
                       key={doc.id}
@@ -1743,6 +1821,7 @@ export default function Home() {
                             <FileText className="w-5 h-5" />
                           </div>
                           <button
+                            type="button"
                             onClick={() => handleToggleFavorite(doc.id)}
                             disabled={togglingFavId === doc.id}
                             title="Favorite"
@@ -1800,6 +1879,7 @@ export default function Home() {
                             Open
                           </button>
                           <button
+                            type="button"
                             onClick={() => handleDeleteFile(doc.id, doc.name)}
                             disabled={deletingId === doc.id}
                             title="Delete"
@@ -1856,7 +1936,7 @@ export default function Home() {
                                 <FileText className="w-4 h-4" />
                               </div>
                               <span
-                                className="truncate max-w-[200px] sm:max-w-xs lg:max-w-sm"
+                                className="truncate max-w-[180px] sm:max-w-xs xl:max-w-md"
                                 title={doc.name}
                               >
                                 {doc.name}
@@ -1934,8 +2014,8 @@ export default function Home() {
           )}
 
           {activeTab === "chat" && (
-            <div className="flex flex-col h-full">
-              <div className="flex-1 p-6 overflow-y-auto space-y-4 max-w-4xl w-full mx-auto">
+            <div className="flex flex-col min-h-[calc(100dvh-7.5rem)] lg:h-full">
+              <div className="flex-1 p-4 sm:p-6 overflow-y-auto space-y-4 max-w-4xl w-full mx-auto">
                 {messages.map((msg, idx) => (
                   <div
                     key={idx}
@@ -1944,7 +2024,7 @@ export default function Home() {
                     }`}
                   >
                     <div
-                      className={`flex gap-3 max-w-[82%] ${
+                      className={`flex gap-2.5 sm:gap-3 max-w-[92%] sm:max-w-[82%] lg:max-w-[75%] ${
                         msg.role === "user" ? "flex-row-reverse" : ""
                       }`}
                     >
@@ -1964,7 +2044,7 @@ export default function Home() {
                         )}
                       </div>
                       <div
-                        className={`p-4 rounded-2xl text-sm ${
+                        className={`p-3.5 sm:p-4 rounded-2xl text-sm min-w-0 ${
                           msg.role === "user"
                             ? "bg-indigo-600 text-white rounded-tr-none"
                             : isDarkResolved
@@ -1972,7 +2052,7 @@ export default function Home() {
                             : "bg-white border border-slate-200/80 text-slate-800 shadow-xs rounded-tl-none"
                         }`}
                       >
-                        <p className="whitespace-pre-wrap leading-relaxed">
+                        <p className="whitespace-pre-wrap leading-relaxed break-words">
                           {msg.content}
                         </p>
 
@@ -1989,7 +2069,7 @@ export default function Home() {
                               return (
                                 <div
                                   key={f.id}
-                                  className="bg-indigo-50/70 border border-indigo-100 rounded-xl p-2.5 text-xs flex items-center justify-between gap-3"
+                                  className="bg-indigo-50/70 border border-indigo-100 rounded-xl p-2.5 text-xs flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 sm:gap-3"
                                 >
                                   <div className="min-w-0 flex-1">
                                     <p className="font-semibold text-indigo-950 truncate">
@@ -2003,6 +2083,7 @@ export default function Home() {
                                   </div>
                                   <div className="flex items-center gap-1.5 flex-shrink-0">
                                     <button
+                                      type="button"
                                       onClick={() => handleToggleFavorite(f.id)}
                                       className="p-1.5 bg-white border border-indigo-100 rounded-lg hover:bg-rose-50 transition"
                                     >
@@ -2045,7 +2126,7 @@ export default function Home() {
 
               <form
                 onSubmit={handleSendMessage}
-                className={`p-4 border-t ${
+                className={`p-3 sm:p-4 border-t ${
                   isDarkResolved
                     ? "bg-slate-900 border-slate-800"
                     : "bg-white border-slate-200/80"
@@ -2057,7 +2138,7 @@ export default function Home() {
                     value={inputQuery}
                     onChange={(e) => setInputQuery(e.target.value)}
                     placeholder="Ask about topics, summarize a document, or find a file..."
-                    className={`w-full rounded-full pl-5 pr-12 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition ${
+                    className={`w-full rounded-full pl-4 sm:pl-5 pr-12 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition ${
                       isDarkResolved
                         ? "bg-slate-800 text-slate-100 focus:bg-slate-950"
                         : "bg-slate-100 text-slate-900 focus:bg-white"
@@ -2076,10 +2157,10 @@ export default function Home() {
           )}
 
           {activeTab === "settings" && (
-            <div className="p-8 max-w-6xl mx-auto">
+            <div className="p-4 sm:p-6 lg:p-8 max-w-6xl mx-auto">
               <div className="mb-6">
-                <h2 className="text-2xl font-bold">Settings</h2>
-                <p className="text-sm text-slate-500 mt-0.5">
+                <h2 className="text-xl sm:text-2xl font-bold">Settings</h2>
+                <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
                   Manage your account and app preferences
                 </p>
               </div>
@@ -2093,6 +2174,7 @@ export default function Home() {
                   }`}
                 >
                   <button
+                    type="button"
                     onClick={() => setSettingsSection("profile")}
                     className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-left transition ${
                       settingsSection === "profile"
@@ -2121,6 +2203,7 @@ export default function Home() {
                   </button>
 
                   <button
+                    type="button"
                     onClick={() => setSettingsSection("storage")}
                     className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-left transition ${
                       settingsSection === "storage"
@@ -2145,6 +2228,7 @@ export default function Home() {
                   </button>
 
                   <button
+                    type="button"
                     onClick={() => setSettingsSection("ai")}
                     className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-left transition ${
                       settingsSection === "ai"
@@ -2169,6 +2253,7 @@ export default function Home() {
                   </button>
 
                   <button
+                    type="button"
                     onClick={() => setSettingsSection("theme")}
                     className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-left transition ${
                       settingsSection === "theme"
@@ -2194,7 +2279,7 @@ export default function Home() {
                 </div>
 
                 <div
-                  className={`lg:col-span-8 border rounded-2xl p-6 shadow-xs space-y-8 ${
+                  className={`lg:col-span-8 border rounded-2xl p-5 sm:p-6 shadow-xs space-y-8 ${
                     isDarkResolved
                       ? "bg-slate-900 border-slate-800"
                       : "bg-white border-slate-200/80"
@@ -2269,7 +2354,7 @@ export default function Home() {
                         </button>
                       </div>
 
-                      <div className="flex items-center gap-3 pt-2">
+                      <div className="flex flex-wrap items-center gap-3 pt-2">
                         <button
                           type="submit"
                           className="px-4 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-xs transition"
@@ -2321,7 +2406,7 @@ export default function Home() {
                         Semantic search filters chunks by your authenticated user
                         ID in Pinecone and answers with Gemini.
                       </p>
-                      <div className="text-sm space-y-2">
+                      <div className="text-sm space-y-2 break-all">
                         <p>
                           <span className="font-semibold">Vector Index:</span>{" "}
                           Pinecone ({files.length} indexed documents)

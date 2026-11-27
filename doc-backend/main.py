@@ -20,9 +20,16 @@ load_dotenv()
 
 app = FastAPI(title="DocuBrain AI Backend")
 
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "*").strip()
+allowed_origins = (
+    ["*"]
+    if allowed_origins_env == "*"
+    else [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -39,6 +46,14 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "docubrain-files")
 
 GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip()
+GEMINI_MODELS = [
+    m.strip()
+    for m in (
+        os.getenv("GEMINI_MODELS")
+        or "gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.5-flash"
+    ).split(",")
+    if m.strip()
+]
 
 if not PINECONE_API_KEY or not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
     raise RuntimeError(
@@ -599,7 +614,7 @@ async def search_files(
             )
 
             parsed_result = None
-            for model_name in ["gemini-3.5-flash-lite", "gemini-3.8-flash"]:
+            for model_name in GEMINI_MODELS:
                 try:
                     llm_response = gemini_client.models.generate_content(
                         model=model_name,
@@ -712,7 +727,12 @@ async def delete_file(
         try:
             index.documents.delete(
                 namespace=PINECONE_NAMESPACE,
-                filter={"$and": [{"user_id": {"$eq": user_id}}, {"file_id": {"$eq": file_id}}]},
+                filter={
+                    "$and": [
+                        {"user_id": {"$eq": user_id}},
+                        {"file_id": {"$eq": file_id}},
+                    ]
+                },
             )
         except Exception:
             chunk_ids = [f"{user_id}_{file_id}_chunk_{i}" for i in range(200)]

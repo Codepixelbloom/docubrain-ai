@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { createClient, Session } from "@supabase/supabase-js";
+import { createClient, Session, SupabaseClient } from "@supabase/supabase-js";
 import {
   LayoutDashboard,
   Files,
@@ -31,8 +31,9 @@ import {
   ChevronRight,
   ChevronDown,
   Check,
-  LogIn,
   LogOut,
+  LayoutGrid,
+  List,
 } from "lucide-react";
 
 const API_BASE = (
@@ -45,6 +46,16 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 const FREE_STORAGE_LIMIT_BYTES = 100 * 1024 * 1024; // 100 MB
 const PROFILE_STORAGE_KEY = "docubrain_profile_v1";
 const THEME_STORAGE_KEY = "docubrain_theme_v1";
+
+let supabaseSingleton: SupabaseClient | null = null;
+
+function getSupabaseClient(): SupabaseClient | null {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  if (!supabaseSingleton) {
+    supabaseSingleton = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
+  return supabaseSingleton;
+}
 
 interface StoredDoc {
   id: string;
@@ -74,6 +85,7 @@ interface UserProfile {
 }
 
 type SortOption = "newest" | "oldest" | "name" | "size";
+type ViewFormat = "list" | "tiles";
 type ActiveTab =
   | "dashboard"
   | "drive"
@@ -84,6 +96,18 @@ type ActiveTab =
 type SettingsSection = "profile" | "storage" | "ai" | "theme";
 type ThemeMode = "light" | "dark" | "system";
 type AuthMode = "signin" | "signup";
+
+const PROTECTED_TABS: Exclude<ActiveTab, "login">[] = [
+  "dashboard",
+  "drive",
+  "favourites",
+  "chat",
+  "settings",
+];
+
+function isProtectedTab(tab: ActiveTab): tab is Exclude<ActiveTab, "login"> {
+  return PROTECTED_TABS.includes(tab as Exclude<ActiveTab, "login">);
+}
 
 const DEFAULT_PROFILE: UserProfile = {
   fullName: "Rahul Sharma",
@@ -123,67 +147,15 @@ function formatNameFromEmail(email: string): string {
   );
 }
 
-function inferCategory(
-  filename: string,
-  ext: string
-): {
-  label: string;
-  badgeClass: string;
-} {
-  const lower = filename.toLowerCase();
-  if (
-    lower.includes("note") ||
-    lower.includes("lecture") ||
-    lower.includes("sem") ||
-    lower.includes("project") ||
-    lower.includes("lab") ||
-    lower.includes("report")
-  ) {
-    return { label: "Academic", badgeClass: "bg-indigo-50 text-indigo-600" };
-  }
-  if (
-    lower.includes("offer") ||
-    lower.includes("resume") ||
-    lower.includes("cv") ||
-    lower.includes("intern") ||
-    lower.includes("work")
-  ) {
-    return { label: "Work", badgeClass: "bg-purple-50 text-purple-600" };
-  }
-  if (
-    lower.includes("invoice") ||
-    lower.includes("bill") ||
-    lower.includes("tax") ||
-    lower.includes("bank") ||
-    ext === "csv"
-  ) {
-    return { label: "Finance", badgeClass: "bg-emerald-50 text-emerald-600" };
-  }
-  if (
-    lower.includes("ticket") ||
-    lower.includes("flight") ||
-    lower.includes("hotel") ||
-    lower.includes("passport")
-  ) {
-    return { label: "Personal", badgeClass: "bg-amber-50 text-amber-600" };
-  }
-  return {
-    label: ext ? ext.toUpperCase() : "Document",
-    badgeClass: "bg-blue-50 text-blue-600",
-  };
-}
-
 export default function Home() {
-  const supabase = useMemo(() => {
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
-    return createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  }, []);
+  const supabase = useMemo(() => getSupabaseClient(), []);
 
   // Navigation & View States
-  const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
+  const [activeTab, setActiveTab] = useState<ActiveTab>("login");
   const [settingsSection, setSettingsSection] =
     useState<SettingsSection>("profile");
   const [sortBy, setSortBy] = useState<SortOption>("newest");
+  const [viewFormat, setViewFormat] = useState<ViewFormat>("list");
   const [globalSearch, setGlobalSearch] = useState<string>("");
 
   // Client-safe date & weekly upload states (avoid Date.now()/new Date() during prerender)
@@ -217,6 +189,7 @@ export default function Home() {
   const [files, setFiles] = useState<StoredDoc[]>([]);
   const [isLoadingFiles, setIsLoadingFiles] = useState<boolean>(false);
   const [isUploading, setIsUploading] = useState<boolean>(false);
+  const [uploadProgressText, setUploadProgressText] = useState<string>("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [togglingFavId, setTogglingFavId] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
@@ -226,7 +199,7 @@ export default function Home() {
     {
       role: "assistant",
       content:
-        "Hello! Sign in to search your uploaded documents, request summaries, or find files by topic.",
+        "Hello! Ask me anything about your uploaded documents, request summaries, or find files by topic.",
     },
   ]);
   const [inputQuery, setInputQuery] = useState<string>("");
@@ -238,6 +211,28 @@ export default function Home() {
 
   const accessToken = session?.access_token || "";
   const isLoggedIn = Boolean(session?.user);
+
+  const navigateProtectedTab = useCallback(
+    (tab: ActiveTab) => {
+      if (!isLoggedIn && isProtectedTab(tab)) {
+        setActiveTab("login");
+        setLoginError(
+          "Please sign in first to access profile, settings, and workspace features."
+        );
+        return;
+      }
+      setActiveTab(tab);
+    },
+    [isLoggedIn]
+  );
+
+  useEffect(() => {
+    if (authReady && !isLoggedIn) {
+      setActiveTab("login");
+    } else if (authReady && isLoggedIn && activeTab === "login") {
+      setActiveTab("dashboard");
+    }
+  }, [authReady, isLoggedIn, activeTab]);
 
   const authHeaders = useCallback(
     (extra: Record<string, string> = {}): Record<string, string> => {
@@ -310,22 +305,31 @@ export default function Home() {
 
     if (!supabase) {
       setAuthReady(true);
+      setActiveTab("login");
       return;
     }
 
+    let mounted = true;
+
     supabase.auth.getSession().then(({ data }) => {
-      applyAuthSession(data.session ?? null);
+      if (!mounted) return;
+      const nextSession = data.session ?? null;
+      applyAuthSession(nextSession);
+      setActiveTab(nextSession?.user ? "dashboard" : "login");
       setAuthReady(true);
     });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (!mounted) return;
       applyAuthSession(nextSession);
+      setActiveTab(nextSession?.user ? "dashboard" : "login");
       setAuthReady(true);
     });
 
     return () => {
+      mounted = false;
       subscription.unsubscribe();
     };
   }, [supabase, applyAuthSession]);
@@ -355,7 +359,7 @@ export default function Home() {
 
   const loadFiles = useCallback(
     async (selectedSort: SortOption = sortBy) => {
-      if (!accessToken) {
+      if (!accessToken || !isLoggedIn) {
         setFiles([]);
         setIsLoadingFiles(false);
         return;
@@ -378,13 +382,17 @@ export default function Home() {
         setIsLoadingFiles(false);
       }
     },
-    [accessToken, authHeaders, sortBy]
+    [accessToken, isLoggedIn, authHeaders, sortBy]
   );
 
   useEffect(() => {
     if (!authReady) return;
+    if (!isLoggedIn) {
+      setFiles([]);
+      return;
+    }
     loadFiles(sortBy);
-  }, [authReady, accessToken, sortBy, loadFiles]);
+  }, [authReady, isLoggedIn, accessToken, sortBy, loadFiles]);
 
   useEffect(() => {
     setTodayFormatted(
@@ -411,6 +419,10 @@ export default function Home() {
   }, [messages, isSearching]);
 
   const handleAvatarFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!isLoggedIn) {
+      navigateProtectedTab("login");
+      return;
+    }
     const selected = e.target.files?.[0];
     if (!selected) return;
 
@@ -426,6 +438,10 @@ export default function Home() {
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isLoggedIn) {
+      navigateProtectedTab("login");
+      return;
+    }
     const cleanName = draftName.trim() || DEFAULT_PROFILE.fullName;
     const cleanEmail = draftEmail.trim() || DEFAULT_PROFILE.email;
 
@@ -528,11 +544,12 @@ export default function Home() {
     }
     setSession(null);
     setFiles([]);
+    setActiveTab("login");
     setLoginMessage("Signed out.");
   };
 
   const handleDownloadFile = async (fileId: string, fileName: string) => {
-    if (!accessToken) {
+    if (!accessToken || !isLoggedIn) {
       setActiveTab("login");
       return;
     }
@@ -544,7 +561,6 @@ export default function Home() {
         redirect: "manual",
       });
 
-      // Handle direct signed URL redirect or JSON/blob fallback
       if (res.status === 307 || res.status === 302) {
         const locationUrl = res.headers.get("location");
         if (locationUrl) {
@@ -579,7 +595,7 @@ export default function Home() {
   };
 
   const handleToggleFavorite = async (fileId: string) => {
-    if (!accessToken) {
+    if (!accessToken || !isLoggedIn) {
       setActiveTab("login");
       return;
     }
@@ -614,45 +630,62 @@ export default function Home() {
     }
   };
 
+  // Supports uploading one or multiple selected files sequentially
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
-    if (!selectedFile) return;
+    const selectedFiles = e.target.files ? Array.from(e.target.files) : [];
+    if (selectedFiles.length === 0) return;
 
-    if (!accessToken) {
+    if (!accessToken || !isLoggedIn) {
       if (fileInputRef.current) fileInputRef.current.value = "";
       setActiveTab("login");
       return;
     }
 
     setIsUploading(true);
-    const formData = new FormData();
-    formData.append("file", selectedFile);
+    const failedFiles: string[] = [];
 
     try {
-      const res = await fetch(`${API_BASE}/api/upload`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: formData,
-      });
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const currentFile = selectedFiles[i];
+        setUploadProgressText(
+          selectedFiles.length > 1
+            ? `Uploading ${i + 1}/${selectedFiles.length}...`
+            : "Indexing..."
+        );
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.detail || "Upload failed");
+        const formData = new FormData();
+        formData.append("file", currentFile);
+
+        try {
+          const res = await fetch(`${API_BASE}/api/upload`, {
+            method: "POST",
+            headers: authHeaders(),
+            body: formData,
+          });
+
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.detail || "Upload failed");
+          }
+        } catch {
+          failedFiles.push(currentFile.name);
+        }
       }
 
       await loadFiles(sortBy);
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : "Error uploading file.";
-      alert(message);
+
+      if (failedFiles.length > 0) {
+        alert(`Some files failed to upload: ${failedFiles.join(", ")}`);
+      }
     } finally {
       setIsUploading(false);
+      setUploadProgressText("");
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
   const handleDeleteFile = async (fileId: string, fileName: string) => {
-    if (!accessToken) {
+    if (!accessToken || !isLoggedIn) {
       setActiveTab("login");
       return;
     }
@@ -677,7 +710,7 @@ export default function Home() {
     const trimmed = queryText.trim();
     if (!trimmed || isSearching) return;
 
-    if (!accessToken) {
+    if (!accessToken || !isLoggedIn) {
       setActiveTab("login");
       return;
     }
@@ -753,12 +786,9 @@ export default function Home() {
   );
   const favouriteCount = files.filter((f) => f.isFavorite).length;
 
-  const categoryCountsMap: Record<string, number> = {};
-  files.forEach((f) => {
-    const { label } = inferCategory(f.name, f.type);
-    categoryCountsMap[label] = (categoryCountsMap[label] || 0) + 1;
-  });
-  const activeCategoriesCount = Object.keys(categoryCountsMap).length;
+  const uniqueExtensionsCount = new Set(
+    files.map((f) => (f.type || "file").toLowerCase())
+  ).size;
 
   const recentFiles = [...files]
     .sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))
@@ -781,6 +811,201 @@ export default function Home() {
 
   const firstName = profile.fullName.trim().split(/\s+/)[0] || "there";
 
+  // Gate everything behind login first: no profile, settings, or workspace access before sign-in
+  if (!authReady || !isLoggedIn) {
+    return (
+      <div
+        className={`flex min-h-screen font-sans transition-colors items-center justify-center p-6 ${
+          isDarkResolved
+            ? "bg-slate-950 text-slate-100"
+            : "bg-[#F8F9FC] text-slate-900"
+        }`}
+      >
+        <div className="w-full max-w-xl">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-sm">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div>
+                <h1 className="font-bold text-base leading-tight">DocuBrain</h1>
+                <span className="text-[11px] font-semibold tracking-wider text-indigo-600 uppercase">
+                  AI
+                </span>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() =>
+                setThemeMode((prev) =>
+                  prev === "light" ? "dark" : prev === "dark" ? "system" : "light"
+                )
+              }
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${
+                isDarkResolved
+                  ? "bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800"
+                  : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              Theme: <span className="capitalize">{themeMode}</span>
+            </button>
+          </div>
+
+          {!authReady ? (
+            <div
+              className={`border rounded-2xl p-8 shadow-xs flex items-center justify-center gap-2.5 text-sm text-slate-500 ${
+                isDarkResolved
+                  ? "bg-slate-900 border-slate-800"
+                  : "bg-white border-slate-200/80"
+              }`}
+            >
+              <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+              <span>Checking session...</span>
+            </div>
+          ) : (
+            <div>
+              <div className="mb-6">
+                <h2 className="text-2xl font-bold">
+                  {authMode === "signup" ? "Create Account" : "Sign In"}
+                </h2>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  Sign in first to access your dashboard, documents, profile, and
+                  settings
+                </p>
+              </div>
+
+              <div
+                className={`border rounded-2xl p-6 shadow-xs space-y-5 ${
+                  isDarkResolved
+                    ? "bg-slate-900 border-slate-800"
+                    : "bg-white border-slate-200/80"
+                }`}
+              >
+                <div className="inline-flex p-1 rounded-xl bg-slate-100 dark:bg-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode("signin");
+                      setLoginError("");
+                      setLoginMessage("");
+                    }}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition ${
+                      authMode === "signin"
+                        ? "bg-indigo-600 text-white"
+                        : "text-slate-500"
+                    }`}
+                  >
+                    Sign In
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode("signup");
+                      setLoginError("");
+                      setLoginMessage("");
+                    }}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition ${
+                      authMode === "signup"
+                        ? "bg-indigo-600 text-white"
+                        : "text-slate-500"
+                    }`}
+                  >
+                    Create Account
+                  </button>
+                </div>
+
+                {loginError && (
+                  <p className="text-xs font-medium text-rose-500">
+                    {loginError}
+                  </p>
+                )}
+                {loginMessage && (
+                  <p className="text-xs font-medium text-emerald-600">
+                    {loginMessage}
+                  </p>
+                )}
+
+                <form onSubmit={handleAuthSubmit} className="space-y-4">
+                  {authMode === "signup" && (
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-500 mb-1.5">
+                        Full Name
+                      </label>
+                      <input
+                        type="text"
+                        value={loginName}
+                        onChange={(e) => setLoginName(e.target.value)}
+                        placeholder="Your full name"
+                        className={`w-full border rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
+                          isDarkResolved
+                            ? "bg-slate-800 border-slate-700 text-slate-100"
+                            : "bg-white border-slate-200 text-slate-900"
+                        }`}
+                      />
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">
+                      Email Address
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      value={loginEmail}
+                      onChange={(e) => setLoginEmail(e.target.value)}
+                      placeholder="you@example.com"
+                      className={`w-full border rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
+                        isDarkResolved
+                          ? "bg-slate-800 border-slate-700 text-slate-100"
+                          : "bg-white border-slate-200 text-slate-900"
+                      }`}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">
+                      Password
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      minLength={6}
+                      value={loginPassword}
+                      onChange={(e) => setLoginPassword(e.target.value)}
+                      placeholder="At least 6 characters"
+                      className={`w-full border rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
+                        isDarkResolved
+                          ? "bg-slate-800 border-slate-700 text-slate-100"
+                          : "bg-white border-slate-200 text-slate-900"
+                      }`}
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-3 pt-2">
+                    <button
+                      type="submit"
+                      disabled={authSubmitting}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 rounded-xl shadow-xs transition"
+                    >
+                      {authSubmitting && (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      )}
+                      <span>
+                        {authMode === "signup" ? "Create Account" : "Sign In"}
+                      </span>
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className={`flex h-screen font-sans transition-colors ${
@@ -791,6 +1016,7 @@ export default function Home() {
     >
       <input
         type="file"
+        multiple
         ref={fileInputRef}
         onChange={handleUpload}
         className="hidden"
@@ -827,7 +1053,7 @@ export default function Home() {
 
           <nav className="space-y-1">
             <button
-              onClick={() => setActiveTab("dashboard")}
+              onClick={() => navigateProtectedTab("dashboard")}
               className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
                 activeTab === "dashboard"
                   ? isDarkResolved
@@ -844,7 +1070,7 @@ export default function Home() {
 
             <button
               onClick={() => {
-                setActiveTab("drive");
+                navigateProtectedTab("drive");
                 loadFiles(sortBy);
               }}
               className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
@@ -874,7 +1100,7 @@ export default function Home() {
 
             <button
               onClick={() => {
-                setActiveTab("favourites");
+                navigateProtectedTab("favourites");
                 loadFiles(sortBy);
               }}
               className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
@@ -909,7 +1135,7 @@ export default function Home() {
             </button>
 
             <button
-              onClick={() => setActiveTab("chat")}
+              onClick={() => navigateProtectedTab("chat")}
               className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
                 activeTab === "chat"
                   ? isDarkResolved
@@ -938,11 +1164,15 @@ export default function Home() {
               ) : (
                 <Upload className="w-4 h-4" />
               )}
-              <span>{isUploading ? "Uploading..." : "Upload / Import"}</span>
+              <span>
+                {isUploading
+                  ? uploadProgressText || "Uploading..."
+                  : "Upload / Import"}
+              </span>
             </button>
 
             <button
-              onClick={() => setActiveTab("settings")}
+              onClick={() => navigateProtectedTab("settings")}
               className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
                 activeTab === "settings"
                   ? isDarkResolved
@@ -958,28 +1188,15 @@ export default function Home() {
             </button>
 
             <button
-              onClick={() => {
-                setLoginError("");
-                setLoginMessage("");
-                setActiveTab("login");
-              }}
-              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
-                activeTab === "login"
-                  ? isDarkResolved
-                    ? "bg-indigo-950/80 text-indigo-300"
-                    : "bg-indigo-50 text-indigo-600"
-                  : isDarkResolved
+              onClick={handleLogout}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${
+                isDarkResolved
                   ? "text-slate-300 hover:bg-slate-800"
                   : "text-slate-600 hover:bg-slate-50"
               }`}
             >
-              <span className="flex items-center gap-3">
-                <LogIn className="w-4 h-4" />
-                <span>{isLoggedIn ? "Switch Account" : "Login"}</span>
-              </span>
-              {isLoggedIn && (
-                <span className="w-2 h-2 rounded-full bg-emerald-500" />
-              )}
+              <LogOut className="w-4 h-4" />
+              <span>Sign Out</span>
             </button>
           </nav>
         </div>
@@ -1059,7 +1276,7 @@ export default function Home() {
 
           <div className="flex items-center gap-3">
             <button
-              onClick={() => setActiveTab("chat")}
+              onClick={() => navigateProtectedTab("chat")}
               className={`flex items-center gap-2 px-3.5 py-2 text-sm font-medium rounded-xl transition ${
                 isDarkResolved
                   ? "text-indigo-300 bg-indigo-950/80 hover:bg-indigo-900/70"
@@ -1080,13 +1297,15 @@ export default function Home() {
               ) : (
                 <Upload className="w-4 h-4" />
               )}
-              <span>{isUploading ? "Indexing..." : "Upload"}</span>
+              <span>
+                {isUploading ? uploadProgressText || "Indexing..." : "Upload"}
+              </span>
             </button>
 
             <button
               onClick={() => {
                 setSettingsSection("profile");
-                setActiveTab("settings");
+                navigateProtectedTab("settings");
               }}
               title={`${profile.fullName} (${profile.email})`}
               className="w-9 h-9 rounded-full bg-indigo-600 text-white text-xs font-semibold flex items-center justify-center overflow-hidden shadow-xs hover:ring-2 hover:ring-indigo-400 transition"
@@ -1116,27 +1335,17 @@ export default function Home() {
                 </div>
 
                 <div className="flex items-center gap-3">
-                  {!isLoggedIn && authReady && (
-                    <button
-                      onClick={() => setActiveTab("login")}
-                      className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border rounded-xl transition ${
-                        isDarkResolved
-                          ? "border-slate-700 text-slate-200 hover:bg-slate-800"
-                          : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                      }`}
-                    >
-                      <LogIn className="w-4 h-4 text-indigo-600" />
-                      <span>Sign In</span>
-                    </button>
-                  )}
-
                   <button
                     onClick={() => fileInputRef.current?.click()}
                     disabled={isUploading}
                     className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-sm transition"
                   >
                     <Upload className="w-4 h-4" />
-                    <span>Upload Documents</span>
+                    <span>
+                      {isUploading
+                        ? uploadProgressText || "Uploading..."
+                        : "Upload Documents"}
+                    </span>
                   </button>
                 </div>
               </div>
@@ -1155,7 +1364,7 @@ export default function Home() {
                     </p>
                     <p className="text-3xl font-bold mt-2">{files.length}</p>
                     <p className="text-xs text-slate-400 mt-1">
-                      across all categories
+                      in your library
                     </p>
                     <p className="text-xs font-medium text-emerald-600 mt-3">
                       +{uploadedThisWeek} this week
@@ -1199,13 +1408,13 @@ export default function Home() {
                 >
                   <div>
                     <p className="text-sm font-medium text-slate-500">
-                      Categories
+                      File Formats
                     </p>
                     <p className="text-3xl font-bold mt-2">
-                      {activeCategoriesCount}
+                      {uniqueExtensionsCount}
                     </p>
                     <p className="text-xs text-slate-400 mt-1">
-                      active categories
+                      supported types
                     </p>
                   </div>
                   <div className="w-10 h-10 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center">
@@ -1251,7 +1460,7 @@ export default function Home() {
                       <h3 className="font-semibold">Recent Documents</h3>
                     </div>
                     <button
-                      onClick={() => setActiveTab("drive")}
+                      onClick={() => navigateProtectedTab("drive")}
                       className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
                     >
                       <span>View all</span>
@@ -1259,20 +1468,7 @@ export default function Home() {
                     </button>
                   </div>
 
-                  {!isLoggedIn && authReady ? (
-                    <div className="text-center py-12 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl space-y-3">
-                      <p className="text-sm font-medium text-slate-500">
-                        Sign in to view and manage your personal documents
-                      </p>
-                      <button
-                        onClick={() => setActiveTab("login")}
-                        className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition"
-                      >
-                        <LogIn className="w-3.5 h-3.5" />
-                        <span>Go to Login</span>
-                      </button>
-                    </div>
-                  ) : isLoadingFiles ? (
+                  {isLoadingFiles ? (
                     <div className="flex items-center justify-center h-44 text-slate-400 gap-2 text-sm">
                       <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
                       <span>Loading recent documents...</span>
@@ -1288,79 +1484,61 @@ export default function Home() {
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      {recentFiles.map((doc) => {
-                        const cat = inferCategory(doc.name, doc.type);
-                        return (
-                          <div
-                            key={doc.id}
-                            className={`flex items-center justify-between gap-4 p-3.5 rounded-xl border transition ${
-                              isDarkResolved
-                                ? "border-slate-800 hover:bg-slate-800/60"
-                                : "border-slate-100 hover:border-slate-200 hover:bg-slate-50/60"
-                            }`}
-                          >
-                            <div className="flex items-center gap-3.5 min-w-0 flex-1">
-                              <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
-                                <FileText className="w-5 h-5" />
-                              </div>
-                              <div className="min-w-0">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handleDownloadFile(doc.id, doc.name)
-                                  }
-                                  className="font-semibold text-sm hover:text-indigo-600 truncate block text-left"
-                                >
-                                  {doc.name}
-                                </button>
-                                <p className="text-xs text-slate-400 truncate mt-0.5">
-                                  {doc.type.toUpperCase()} · ID{" "}
-                                  {doc.id.slice(0, 8)}
-                                </p>
-                              </div>
+                      {recentFiles.map((doc) => (
+                        <div
+                          key={doc.id}
+                          className={`flex items-center justify-between gap-4 p-3.5 rounded-xl border transition ${
+                            isDarkResolved
+                              ? "border-slate-800 hover:bg-slate-800/60"
+                              : "border-slate-100 hover:border-slate-200 hover:bg-slate-50/60"
+                          }`}
+                        >
+                          <div className="flex items-center gap-3.5 min-w-0 flex-1">
+                            <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
+                              <FileText className="w-5 h-5" />
                             </div>
-
-                            <span
-                              className={`hidden sm:inline-block text-xs font-medium px-2.5 py-1 rounded-full ${cat.badgeClass}`}
-                            >
-                              {cat.label}
-                            </span>
-
-                            <div className="hidden md:block text-right text-xs">
-                              <p className="font-medium">
-                                {formatShortDate(doc.uploadedAt)}
-                              </p>
-                              <p className="text-slate-400 mt-0.5">
+                            <div className="min-w-0">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleDownloadFile(doc.id, doc.name)
+                                }
+                                className="font-semibold text-sm hover:text-indigo-600 truncate block text-left"
+                              >
+                                {doc.name}
+                              </button>
+                              <p className="text-xs text-slate-400 truncate mt-0.5">
+                                {formatShortDate(doc.uploadedAt)} ·{" "}
                                 {formatBytes(doc.sizeBytes)}
                               </p>
                             </div>
-
-                            <span className="hidden sm:inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600">
-                              <CheckCircle2 className="w-3 h-3" />
-                              Analyzed
-                            </span>
-
-                            <button
-                              onClick={() => handleToggleFavorite(doc.id)}
-                              disabled={togglingFavId === doc.id}
-                              title={
-                                doc.isFavorite
-                                  ? "Remove from Favorites"
-                                  : "Add to Favorites"
-                              }
-                              className="p-1.5 rounded-lg hover:bg-rose-50 transition"
-                            >
-                              <Heart
-                                className={`w-4 h-4 ${
-                                  doc.isFavorite
-                                    ? "fill-rose-500 text-rose-500"
-                                    : "text-slate-300 hover:text-rose-400"
-                                }`}
-                              />
-                            </button>
                           </div>
-                        );
-                      })}
+
+                          <span className="hidden sm:inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600">
+                            <CheckCircle2 className="w-3 h-3" />
+                            Analyzed
+                          </span>
+
+                          <button
+                            onClick={() => handleToggleFavorite(doc.id)}
+                            disabled={togglingFavId === doc.id}
+                            title={
+                              doc.isFavorite
+                                ? "Remove from Favorites"
+                                : "Add to Favorites"
+                            }
+                            className="p-1.5 rounded-lg hover:bg-rose-50 transition"
+                          >
+                            <Heart
+                              className={`w-4 h-4 ${
+                                doc.isFavorite
+                                  ? "fill-rose-500 text-rose-500"
+                                  : "text-slate-300 hover:text-rose-400"
+                              }`}
+                            />
+                          </button>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -1448,6 +1626,46 @@ export default function Home() {
                 </div>
 
                 <div className="flex items-center gap-3">
+                  {/* List / Tiles View Toggle */}
+                  <div
+                    className={`inline-flex p-1 rounded-xl border ${
+                      isDarkResolved
+                        ? "bg-slate-900 border-slate-700"
+                        : "bg-white border-slate-200"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setViewFormat("list")}
+                      title="List view"
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                        viewFormat === "list"
+                          ? "bg-indigo-600 text-white"
+                          : isDarkResolved
+                          ? "text-slate-300 hover:bg-slate-800"
+                          : "text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      <List className="w-3.5 h-3.5" />
+                      <span>List</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setViewFormat("tiles")}
+                      title="Tiles view"
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                        viewFormat === "tiles"
+                          ? "bg-indigo-600 text-white"
+                          : isDarkResolved
+                          ? "text-slate-300 hover:bg-slate-800"
+                          : "text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      <LayoutGrid className="w-3.5 h-3.5" />
+                      <span>Tiles</span>
+                    </button>
+                  </div>
+
                   <div className="flex items-center gap-1.5 text-sm">
                     <ArrowUpDown className="w-4 h-4 text-slate-400" />
                     <select
@@ -1498,19 +1716,105 @@ export default function Home() {
                   }`}
                 >
                   <p className="font-medium">
-                    {!isLoggedIn
-                      ? "Sign in to view your documents"
-                      : activeTab === "favourites"
+                    {activeTab === "favourites"
                       ? "No favorite documents yet"
                       : "No documents found"}
                   </p>
                   <p className="text-xs text-slate-400 mt-1">
-                    {!isLoggedIn
-                      ? "Use the Login tab to access your account from any device."
-                      : activeTab === "favourites"
+                    {activeTab === "favourites"
                       ? "Click the heart icon next to any document to save it here."
-                      : "Upload a document using the button in the top bar."}
+                      : "Upload one or more documents using the button in the top bar."}
                   </p>
+                </div>
+              ) : viewFormat === "tiles" ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {displayedListFiles.map((doc) => (
+                    <div
+                      key={doc.id}
+                      className={`border rounded-2xl p-4 shadow-xs flex flex-col justify-between transition ${
+                        isDarkResolved
+                          ? "bg-slate-900 border-slate-800 hover:border-slate-700"
+                          : "bg-white border-slate-200/80 hover:border-slate-300"
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-start justify-between gap-2 mb-3">
+                          <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
+                            <FileText className="w-5 h-5" />
+                          </div>
+                          <button
+                            onClick={() => handleToggleFavorite(doc.id)}
+                            disabled={togglingFavId === doc.id}
+                            title="Favorite"
+                            className="p-1.5 rounded-lg hover:bg-rose-50 transition"
+                          >
+                            <Heart
+                              className={`w-4 h-4 ${
+                                doc.isFavorite
+                                  ? "fill-rose-500 text-rose-500"
+                                  : "text-slate-300 hover:text-rose-400"
+                              }`}
+                            />
+                          </button>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadFile(doc.id, doc.name)}
+                          className="font-semibold text-sm hover:text-indigo-600 line-clamp-2 text-left break-words"
+                          title={doc.name}
+                        >
+                          {doc.name}
+                        </button>
+
+                        <p className="text-xs text-slate-400 mt-1.5">
+                          {formatShortDate(doc.uploadedAt)} ·{" "}
+                          {formatBytes(doc.sizeBytes)}
+                        </p>
+                      </div>
+
+                      <div
+                        className={`mt-4 pt-3 border-t flex items-center justify-between gap-2 ${
+                          isDarkResolved
+                            ? "border-slate-800"
+                            : "border-slate-100"
+                        }`}
+                      >
+                        <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">
+                          <CheckCircle2 className="w-3 h-3" />
+                          Analyzed
+                        </span>
+
+                        <div className="inline-flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadFile(doc.id, doc.name)}
+                            disabled={downloadingId === doc.id}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition"
+                          >
+                            {downloadingId === doc.id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Download className="w-3.5 h-3.5" />
+                            )}
+                            Open
+                          </button>
+                          <button
+                            onClick={() => handleDeleteFile(doc.id, doc.name)}
+                            disabled={deletingId === doc.id}
+                            title="Delete"
+                            className="p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 rounded-lg transition"
+                          >
+                            {deletingId === doc.id ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-4 h-4" />
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               ) : (
                 <div
@@ -1531,7 +1835,6 @@ export default function Home() {
                       <tr>
                         <th className="py-3.5 px-4 w-12">#</th>
                         <th className="py-3.5 px-4">Document</th>
-                        <th className="py-3.5 px-4">Category</th>
                         <th className="py-3.5 px-4">Uploaded</th>
                         <th className="py-3.5 px-4">Size</th>
                         <th className="py-3.5 px-4">Status</th>
@@ -1539,93 +1842,81 @@ export default function Home() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {displayedListFiles.map((doc, idx) => {
-                        const cat = inferCategory(doc.name, doc.type);
-                        return (
-                          <tr
-                            key={doc.id}
-                            className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition"
-                          >
-                            <td className="py-3.5 px-4 text-slate-400 font-mono text-xs">
-                              {idx + 1}
-                            </td>
-                            <td className="py-3.5 px-4 font-medium flex items-center gap-3">
-                              <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
-                                <FileText className="w-4 h-4" />
-                              </div>
-                              <span className="truncate max-w-md">
-                                {doc.name}
-                              </span>
-                            </td>
-                            <td className="py-3.5 px-4">
-                              <span
-                                className={`text-xs font-medium px-2.5 py-1 rounded-full ${cat.badgeClass}`}
+                      {displayedListFiles.map((doc, idx) => (
+                        <tr
+                          key={doc.id}
+                          className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition"
+                        >
+                          <td className="py-3.5 px-4 text-slate-400 font-mono text-xs">
+                            {idx + 1}
+                          </td>
+                          <td className="py-3.5 px-4 font-medium flex items-center gap-3">
+                            <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
+                              <FileText className="w-4 h-4" />
+                            </div>
+                            <span className="truncate max-w-md">{doc.name}</span>
+                          </td>
+                          <td className="py-3.5 px-4 text-slate-500 text-xs">
+                            {formatShortDate(doc.uploadedAt)}
+                          </td>
+                          <td className="py-3.5 px-4 text-slate-500 text-xs">
+                            {formatBytes(doc.sizeBytes)}
+                          </td>
+                          <td className="py-3.5 px-4">
+                            <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600">
+                              <CheckCircle2 className="w-3 h-3" />
+                              Analyzed
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-4 text-right">
+                            <div className="inline-flex items-center gap-1.5">
+                              <button
+                                onClick={() => handleToggleFavorite(doc.id)}
+                                disabled={togglingFavId === doc.id}
+                                title="Favorite"
+                                className="p-1.5 rounded-lg hover:bg-rose-50 transition"
                               >
-                                {cat.label}
-                              </span>
-                            </td>
-                            <td className="py-3.5 px-4 text-slate-500 text-xs">
-                              {formatShortDate(doc.uploadedAt)}
-                            </td>
-                            <td className="py-3.5 px-4 text-slate-500 text-xs">
-                              {formatBytes(doc.sizeBytes)}
-                            </td>
-                            <td className="py-3.5 px-4">
-                              <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600">
-                                <CheckCircle2 className="w-3 h-3" />
-                                Analyzed
-                              </span>
-                            </td>
-                            <td className="py-3.5 px-4 text-right">
-                              <div className="inline-flex items-center gap-1.5">
-                                <button
-                                  onClick={() => handleToggleFavorite(doc.id)}
-                                  disabled={togglingFavId === doc.id}
-                                  title="Favorite"
-                                  className="p-1.5 rounded-lg hover:bg-rose-50 transition"
-                                >
-                                  <Heart
-                                    className={`w-4 h-4 ${
-                                      doc.isFavorite
-                                        ? "fill-rose-500 text-rose-500"
-                                        : "text-slate-300 hover:text-rose-400"
-                                    }`}
-                                  />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handleDownloadFile(doc.id, doc.name)
-                                  }
-                                  disabled={downloadingId === doc.id}
-                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition"
-                                >
-                                  {downloadingId === doc.id ? (
-                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                  ) : (
-                                    <Download className="w-3.5 h-3.5" />
-                                  )}
-                                  Open
-                                </button>
-                                <button
-                                  onClick={() =>
-                                    handleDeleteFile(doc.id, doc.name)
-                                  }
-                                  disabled={deletingId === doc.id}
-                                  title="Delete"
-                                  className="p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 rounded-lg transition"
-                                >
-                                  {deletingId === doc.id ? (
-                                    <Loader2 className="w-4 h-4 animate-spin" />
-                                  ) : (
-                                    <Trash2 className="w-4 h-4" />
-                                  )}
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
+                                <Heart
+                                  className={`w-4 h-4 ${
+                                    doc.isFavorite
+                                      ? "fill-rose-500 text-rose-500"
+                                      : "text-slate-300 hover:text-rose-400"
+                                  }`}
+                                />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleDownloadFile(doc.id, doc.name)
+                                }
+                                disabled={downloadingId === doc.id}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition"
+                              >
+                                {downloadingId === doc.id ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <Download className="w-3.5 h-3.5" />
+                                )}
+                                Open
+                              </button>
+                              <button
+                                onClick={() =>
+                                  handleDeleteFile(doc.id, doc.name)
+                                }
+                                disabled={deletingId === doc.id}
+                                title="Delete"
+                                className="p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 rounded-lg transition"
+                              >
+                                {deletingId === doc.id ? (
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                  <Trash2 className="w-4 h-4" />
+                                )}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
                 </div>
@@ -2138,183 +2429,6 @@ export default function Home() {
                     </div>
                   </div>
                 </div>
-              </div>
-            </div>
-          )}
-
-          {activeTab === "login" && (
-            <div className="p-8 max-w-xl mx-auto">
-              <div className="mb-6">
-                <h2 className="text-2xl font-bold">
-                  {authMode === "signup" ? "Create Account" : "Sign In"}
-                </h2>
-                <p className="text-sm text-slate-500 mt-0.5">
-                  {isLoggedIn
-                    ? `Signed in as ${session?.user?.email || profile.email}`
-                    : "Sign in to access your cloud documents from any device"}
-                </p>
-              </div>
-
-              <div
-                className={`border rounded-2xl p-6 shadow-xs space-y-5 ${
-                  isDarkResolved
-                    ? "bg-slate-900 border-slate-800"
-                    : "bg-white border-slate-200/80"
-                }`}
-              >
-                <div className="inline-flex p-1 rounded-xl bg-slate-100 dark:bg-slate-800">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAuthMode("signin");
-                      setLoginError("");
-                      setLoginMessage("");
-                    }}
-                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition ${
-                      authMode === "signin"
-                        ? "bg-indigo-600 text-white"
-                        : "text-slate-500"
-                    }`}
-                  >
-                    Sign In
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAuthMode("signup");
-                      setLoginError("");
-                      setLoginMessage("");
-                    }}
-                    className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition ${
-                      authMode === "signup"
-                        ? "bg-indigo-600 text-white"
-                        : "text-slate-500"
-                    }`}
-                  >
-                    Create Account
-                  </button>
-                </div>
-
-                {isLoggedIn && (
-                  <div
-                    className={`p-3.5 rounded-xl border flex items-center justify-between ${
-                      isDarkResolved
-                        ? "bg-slate-800/70 border-slate-700"
-                        : "bg-slate-50 border-slate-200/70"
-                    }`}
-                  >
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold truncate">
-                        {profile.fullName}
-                      </p>
-                      <p className="text-xs text-slate-400 truncate">
-                        {session?.user?.email || profile.email}
-                      </p>
-                    </div>
-                    <span className="text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600">
-                      Active Session
-                    </span>
-                  </div>
-                )}
-
-                {loginError && (
-                  <p className="text-xs font-medium text-rose-500">
-                    {loginError}
-                  </p>
-                )}
-                {loginMessage && (
-                  <p className="text-xs font-medium text-emerald-600">
-                    {loginMessage}
-                  </p>
-                )}
-
-                <form onSubmit={handleAuthSubmit} className="space-y-4">
-                  {authMode === "signup" && (
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5">
-                        Full Name
-                      </label>
-                      <input
-                        type="text"
-                        value={loginName}
-                        onChange={(e) => setLoginName(e.target.value)}
-                        placeholder="Your full name"
-                        className={`w-full border rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
-                          isDarkResolved
-                            ? "bg-slate-800 border-slate-700 text-slate-100"
-                            : "bg-white border-slate-200 text-slate-900"
-                        }`}
-                      />
-                    </div>
-                  )}
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">
-                      Email Address
-                    </label>
-                    <input
-                      type="email"
-                      required
-                      value={loginEmail}
-                      onChange={(e) => setLoginEmail(e.target.value)}
-                      placeholder="you@example.com"
-                      className={`w-full border rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
-                        isDarkResolved
-                          ? "bg-slate-800 border-slate-700 text-slate-100"
-                          : "bg-white border-slate-200 text-slate-900"
-                      }`}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">
-                      Password
-                    </label>
-                    <input
-                      type="password"
-                      required
-                      minLength={6}
-                      value={loginPassword}
-                      onChange={(e) => setLoginPassword(e.target.value)}
-                      placeholder="At least 6 characters"
-                      className={`w-full border rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
-                        isDarkResolved
-                          ? "bg-slate-800 border-slate-700 text-slate-100"
-                          : "bg-white border-slate-200 text-slate-900"
-                      }`}
-                    />
-                  </div>
-
-                  <div className="flex items-center gap-3 pt-2">
-                    <button
-                      type="submit"
-                      disabled={authSubmitting}
-                      className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 rounded-xl shadow-xs transition"
-                    >
-                      {authSubmitting && (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      )}
-                      <span>
-                        {authMode === "signup" ? "Create Account" : "Sign In"}
-                      </span>
-                    </button>
-
-                    {isLoggedIn && (
-                      <button
-                        type="button"
-                        onClick={handleLogout}
-                        className={`inline-flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border rounded-xl transition ${
-                          isDarkResolved
-                            ? "border-slate-700 text-slate-300 hover:bg-slate-800"
-                            : "border-slate-200 text-slate-600 hover:bg-slate-50"
-                        }`}
-                      >
-                        <LogOut className="w-4 h-4" />
-                        <span>Sign Out</span>
-                      </button>
-                    )}
-                  </div>
-                </form>
               </div>
             </div>
           )}

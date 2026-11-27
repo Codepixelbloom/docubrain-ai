@@ -964,7 +964,7 @@ export default function Home() {
             ) : (
               <Upload className="w-4 h-4 flex-shrink-0" />
             )}
-            <span className="truncate">
+            <span className="break-words">
               {isUploading
                 ? uploadProgressText || "Uploading..."
                 : "Upload / Import"}
@@ -1284,7 +1284,7 @@ export default function Home() {
             className="fixed inset-0 bg-slate-950/50 backdrop-blur-[1px]"
           />
           <aside
-            className={`relative z-10 w-72 max-w-[85vw] h-full border-r flex flex-col justify-between p-4 overflow-y-auto shadow-xl transition-colors ${
+            className={`relative z-10 w-72 max-w-[85vw] h-full border-r flex-col justify-between p-4 overflow-y-auto shadow-xl transition-colors ${
               isDarkResolved
                 ? "bg-slate-900 border-slate-800"
                 : "bg-white border-slate-200/80"
@@ -1523,7 +1523,7 @@ export default function Home() {
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div
-                  className={`lg:col-span-2 border rounded-2xl p-5 sm:p-6 shadow-xs ${
+                  className={`lg:col-span-2 border rounded-2xl p-5 sm:p-6 shadow-xs min-w-0 ${
                     isDarkResolved
                       ? "bg-slate-900 border-slate-800"
                       : "bg-white border-slate-200/80"
@@ -1563,34 +1563,34 @@ export default function Home() {
                       {recentFiles.map((doc) => (
                         <div
                           key={doc.id}
-                          className={`flex items-center justify-between gap-3 sm:gap-4 p-3.5 rounded-xl border transition ${
+                          className={`flex items-start justify-between gap-3 sm:gap-4 p-3.5 rounded-xl border transition ${
                             isDarkResolved
                               ? "border-slate-800 hover:bg-slate-800/60"
                               : "border-slate-100 hover:border-slate-200 hover:bg-slate-50/60"
                           }`}
                         >
-                          <div className="flex items-center gap-3 min-w-0 flex-1">
-                            <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
+                          <div className="flex items-start gap-3 min-w-0 flex-1">
+                            <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0 mt-0.5">
                               <FileText className="w-5 h-5" />
                             </div>
-                            <div className="min-w-0">
+                            <div className="min-w-0 flex-1">
                               <button
                                 type="button"
                                 onClick={() =>
                                   handleDownloadFile(doc.id, doc.name)
                                 }
-                                className="font-semibold text-sm hover:text-indigo-600 truncate block text-left"
+                                className="font-semibold text-sm hover:text-indigo-600 break-words [overflow-wrap:anywhere] block text-left"
                               >
                                 {doc.name}
                               </button>
-                              <p className="text-xs text-slate-400 truncate mt-0.5">
+                              <p className="text-xs text-slate-400 mt-0.5">
                                 {formatShortDate(doc.uploadedAt)} ·{" "}
                                 {formatBytes(doc.sizeBytes)}
                               </p>
                             </div>
                           </div>
 
-                          <span className="hidden sm:inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600 flex-shrink-0">
+                          <span className="hidden sm:inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600 flex-shrink-0 whitespace-nowrap">
                             <CheckCircle2 className="w-3 h-3" />
                             Analyzed
                           </span>
@@ -1809,13 +1809,13 @@ export default function Home() {
                   {displayedListFiles.map((doc) => (
                     <div
                       key={doc.id}
-                      className={`border rounded-2xl p-4 shadow-xs flex flex-col justify-between transition ${
+                      className={`border rounded-2xl p-4 shadow-xs flex flex-col justify-between min-w-0 transition ${
                         isDarkResolved
                           ? "bg-slate-900 border-slate-800 hover:border-slate-700"
                           : "bg-white border-slate-200/80 hover:border-slate-300"
                       }`}
                     >
-                      <div>
+                      <div className="min-w-0">
                         <div className="flex items-start justify-between gap-2 mb-3">
                           <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
                             <FileText className="w-5 h-5" />
@@ -1825,7 +1825,7 @@ export default function Home() {
                             onClick={() => handleToggleFavorite(doc.id)}
                             disabled={togglingFavId === doc.id}
                             title="Favorite"
-                            className="p-1.5 rounded-lg hover:bg-rose-50 transition"
+                            className="p-1.5 rounded-lg hover:bg-rose-50 transition flex-shrink-0"
                           >
                             <Heart
                               className={`w-4 h-4 ${
@@ -1840,8 +1840,7 @@ export default function Home() {
                         <button
                           type="button"
                           onClick={() => handleDownloadFile(doc.id, doc.name)}
-                          className="font-semibold text-sm hover:text-indigo-600 line-clamp-2 text-left break-words"
-                          title={doc.name}
+                          className="font-semibold text-sm hover:text-indigo-600 text-left break-words [overflow-wrap:anywhere] w-full"
                         >
                           {doc.name}
                         </button>
@@ -1859,17 +1858,17 @@ export default function Home() {
                             : "border-slate-100"
                         }`}
                       >
-                        <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 whitespace-nowrap">
                           <CheckCircle2 className="w-3 h-3" />
                           Analyzed
                         </span>
 
-                        <div className="inline-flex items-center gap-1">
+                        <div className="inline-flex items-center gap-1 flex-shrink-0">
                           <button
                             type="button"
                             onClick={() => handleDownloadFile(doc.id, doc.name)}
                             disabled={downloadingId === doc.id}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition whitespace-nowrap"
                           >
                             {downloadingId === doc.id ? (
                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -1904,7 +1903,7 @@ export default function Home() {
                       : "bg-white border-slate-200/80"
                   }`}
                 >
-                  <table className="w-full text-left text-sm min-w-[680px]">
+                  <table className="w-full text-left text-sm min-w-[720px]">
                     <thead
                       className={`border-b text-xs uppercase text-slate-500 ${
                         isDarkResolved
@@ -1914,7 +1913,7 @@ export default function Home() {
                     >
                       <tr>
                         <th className="py-3.5 px-4 w-12 whitespace-nowrap">#</th>
-                        <th className="py-3.5 px-4 whitespace-nowrap">Document</th>
+                        <th className="py-3.5 px-4">Document</th>
                         <th className="py-3.5 px-4 whitespace-nowrap">Uploaded</th>
                         <th className="py-3.5 px-4 whitespace-nowrap">Size</th>
                         <th className="py-3.5 px-4 whitespace-nowrap">Status</th>
@@ -1927,35 +1926,38 @@ export default function Home() {
                           key={doc.id}
                           className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition"
                         >
-                          <td className="py-3.5 px-4 text-slate-400 font-mono text-xs whitespace-nowrap">
+                          <td className="py-3.5 px-4 text-slate-400 font-mono text-xs whitespace-nowrap align-top">
                             {idx + 1}
                           </td>
-                          <td className="py-3.5 px-4 font-medium">
-                            <div className="flex items-center gap-3 min-w-0">
-                              <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
+                          <td className="py-3.5 px-4 font-medium align-top min-w-[220px] max-w-xl">
+                            <div className="flex items-start gap-3 min-w-0">
+                              <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0 mt-0.5">
                                 <FileText className="w-4 h-4" />
                               </div>
-                              <span
-                                className="truncate max-w-[180px] sm:max-w-xs xl:max-w-md"
-                                title={doc.name}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleDownloadFile(doc.id, doc.name)
+                                }
+                                className="text-left break-words [overflow-wrap:anywhere] hover:text-indigo-600 transition min-w-0"
                               >
                                 {doc.name}
-                              </span>
+                              </button>
                             </div>
                           </td>
-                          <td className="py-3.5 px-4 text-slate-500 text-xs whitespace-nowrap">
+                          <td className="py-3.5 px-4 text-slate-500 text-xs whitespace-nowrap align-top">
                             {formatShortDate(doc.uploadedAt)}
                           </td>
-                          <td className="py-3.5 px-4 text-slate-500 text-xs whitespace-nowrap">
+                          <td className="py-3.5 px-4 text-slate-500 text-xs whitespace-nowrap align-top">
                             {formatBytes(doc.sizeBytes)}
                           </td>
-                          <td className="py-3.5 px-4 whitespace-nowrap">
+                          <td className="py-3.5 px-4 whitespace-nowrap align-top">
                             <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600">
                               <CheckCircle2 className="w-3 h-3" />
                               Analyzed
                             </span>
                           </td>
-                          <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                          <td className="py-3.5 px-4 text-right whitespace-nowrap align-top">
                             <div className="inline-flex items-center gap-1.5">
                               <button
                                 type="button"
@@ -2052,7 +2054,7 @@ export default function Home() {
                             : "bg-white border border-slate-200/80 text-slate-800 shadow-xs rounded-tl-none"
                         }`}
                       >
-                        <p className="whitespace-pre-wrap leading-relaxed break-words">
+                        <p className="whitespace-pre-wrap leading-relaxed break-words [overflow-wrap:anywhere]">
                           {msg.content}
                         </p>
 
@@ -2069,14 +2071,14 @@ export default function Home() {
                               return (
                                 <div
                                   key={f.id}
-                                  className="bg-indigo-50/70 border border-indigo-100 rounded-xl p-2.5 text-xs flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 sm:gap-3"
+                                  className="bg-indigo-50/70 border border-indigo-100 rounded-xl p-2.5 text-xs flex flex-wrap sm:flex-nowrap items-start justify-between gap-2 sm:gap-3"
                                 >
                                   <div className="min-w-0 flex-1">
-                                    <p className="font-semibold text-indigo-950 truncate">
+                                    <p className="font-semibold text-indigo-950 break-words [overflow-wrap:anywhere]">
                                       {f.name}
                                     </p>
                                     {f.relevanceSnippet && (
-                                      <p className="text-slate-600 italic line-clamp-1 mt-0.5">
+                                      <p className="text-slate-600 italic line-clamp-2 mt-0.5 break-words [overflow-wrap:anywhere]">
                                         &quot;{f.relevanceSnippet}&quot;
                                       </p>
                                     )}

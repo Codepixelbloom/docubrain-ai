@@ -1032,7 +1032,7 @@ export default function Home() {
 
       {/* LEFT SIDEBAR */}
       <aside
-        className={`w-64 border-r flex flex-col justify-between p-4 transition-colors ${
+        className={`w-64 flex-shrink-0 border-r flex flex-col justify-between p-4 transition-colors ${
           isDarkResolved
             ? "bg-slate-900 border-slate-800"
             : "bg-white border-slate-200/80"
@@ -1242,7 +1242,7 @@ export default function Home() {
       </aside>
 
       {/* RIGHT MAIN SHELL */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
         <header
           className={`h-16 border-b px-8 flex items-center justify-between gap-4 transition-colors ${
             isDarkResolved
@@ -1250,8 +1250,8 @@ export default function Home() {
               : "bg-white border-slate-200/80"
           }`}
         >
-          <div className="flex items-center gap-6 flex-1">
-            <span className="font-semibold text-sm">
+          <div className="flex items-center gap-6 flex-1 min-w-0">
+            <span className="font-semibold text-sm whitespace-nowrap">
               {tabTitleMap[activeTab]}
             </span>
 
@@ -1274,7 +1274,7 @@ export default function Home() {
             </form>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-shrink-0">
             <button
               onClick={() => navigateProtectedTab("chat")}
               className={`flex items-center gap-2 px-3.5 py-2 text-sm font-medium rounded-xl transition ${
@@ -1818,13 +1818,13 @@ export default function Home() {
                 </div>
               ) : (
                 <div
-                  className={`border rounded-2xl overflow-hidden shadow-xs ${
+                  className={`border rounded-2xl overflow-x-auto shadow-xs ${
                     isDarkResolved
                       ? "bg-slate-900 border-slate-800"
                       : "bg-white border-slate-200/80"
                   }`}
                 >
-                  <table className="w-full text-left text-sm">
+                  <table className="w-full text-left text-sm min-w-[680px]">
                     <thead
                       className={`border-b text-xs uppercase text-slate-500 ${
                         isDarkResolved
@@ -1833,12 +1833,12 @@ export default function Home() {
                       }`}
                     >
                       <tr>
-                        <th className="py-3.5 px-4 w-12">#</th>
-                        <th className="py-3.5 px-4">Document</th>
-                        <th className="py-3.5 px-4">Uploaded</th>
-                        <th className="py-3.5 px-4">Size</th>
-                        <th className="py-3.5 px-4">Status</th>
-                        <th className="py-3.5 px-4 text-right">Actions</th>
+                        <th className="py-3.5 px-4 w-12 whitespace-nowrap">#</th>
+                        <th className="py-3.5 px-4 whitespace-nowrap">Document</th>
+                        <th className="py-3.5 px-4 whitespace-nowrap">Uploaded</th>
+                        <th className="py-3.5 px-4 whitespace-nowrap">Size</th>
+                        <th className="py-3.5 px-4 whitespace-nowrap">Status</th>
+                        <th className="py-3.5 px-4 text-right whitespace-nowrap">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -1847,30 +1847,38 @@ export default function Home() {
                           key={doc.id}
                           className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition"
                         >
-                          <td className="py-3.5 px-4 text-slate-400 font-mono text-xs">
+                          <td className="py-3.5 px-4 text-slate-400 font-mono text-xs whitespace-nowrap">
                             {idx + 1}
                           </td>
-                          <td className="py-3.5 px-4 font-medium flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
-                              <FileText className="w-4 h-4" />
+                          <td className="py-3.5 px-4 font-medium">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center flex-shrink-0">
+                                <FileText className="w-4 h-4" />
+                              </div>
+                              <span
+                                className="truncate max-w-[200px] sm:max-w-xs lg:max-w-sm"
+                                title={doc.name}
+                              >
+                                {doc.name}
+                              </span>
                             </div>
-                            <span className="truncate max-w-md">{doc.name}</span>
                           </td>
-                          <td className="py-3.5 px-4 text-slate-500 text-xs">
+                          <td className="py-3.5 px-4 text-slate-500 text-xs whitespace-nowrap">
                             {formatShortDate(doc.uploadedAt)}
                           </td>
-                          <td className="py-3.5 px-4 text-slate-500 text-xs">
+                          <td className="py-3.5 px-4 text-slate-500 text-xs whitespace-nowrap">
                             {formatBytes(doc.sizeBytes)}
                           </td>
-                          <td className="py-3.5 px-4">
+                          <td className="py-3.5 px-4 whitespace-nowrap">
                             <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600">
                               <CheckCircle2 className="w-3 h-3" />
                               Analyzed
                             </span>
                           </td>
-                          <td className="py-3.5 px-4 text-right">
+                          <td className="py-3.5 px-4 text-right whitespace-nowrap">
                             <div className="inline-flex items-center gap-1.5">
                               <button
+                                type="button"
                                 onClick={() => handleToggleFavorite(doc.id)}
                                 disabled={togglingFavId === doc.id}
                                 title="Favorite"
@@ -1900,6 +1908,7 @@ export default function Home() {
                                 Open
                               </button>
                               <button
+                                type="button"
                                 onClick={() =>
                                   handleDeleteFile(doc.id, doc.name)
                                 }

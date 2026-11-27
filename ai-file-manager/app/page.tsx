@@ -1579,7 +1579,7 @@ export default function Home() {
                                 onClick={() =>
                                   handleDownloadFile(doc.id, doc.name)
                                 }
-                                className="font-semibold text-sm hover:text-indigo-600 break-words [overflow-wrap:anywhere] block text-left"
+                                className="font-semibold text-sm hover:text-indigo-600 break-all block text-left w-full"
                               >
                                 {doc.name}
                               </button>
@@ -1590,30 +1590,32 @@ export default function Home() {
                             </div>
                           </div>
 
-                          <span className="hidden sm:inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600 flex-shrink-0 whitespace-nowrap">
-                            <CheckCircle2 className="w-3 h-3" />
-                            Analyzed
-                          </span>
+                          <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+                            <span className="hidden sm:inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600 whitespace-nowrap">
+                              <CheckCircle2 className="w-3 h-3" />
+                              Analyzed
+                            </span>
 
-                          <button
-                            type="button"
-                            onClick={() => handleToggleFavorite(doc.id)}
-                            disabled={togglingFavId === doc.id}
-                            title={
-                              doc.isFavorite
-                                ? "Remove from Favorites"
-                                : "Add to Favorites"
-                            }
-                            className="p-1.5 rounded-lg hover:bg-rose-50 transition flex-shrink-0"
-                          >
-                            <Heart
-                              className={`w-4 h-4 ${
+                            <button
+                              type="button"
+                              onClick={() => handleToggleFavorite(doc.id)}
+                              disabled={togglingFavId === doc.id}
+                              title={
                                 doc.isFavorite
-                                  ? "fill-rose-500 text-rose-500"
-                                  : "text-slate-300 hover:text-rose-400"
-                              }`}
-                            />
-                          </button>
+                                  ? "Remove from Favorites"
+                                  : "Add to Favorites"
+                              }
+                              className="p-1.5 rounded-lg hover:bg-rose-50 transition"
+                            >
+                              <Heart
+                                className={`w-4 h-4 ${
+                                  doc.isFavorite
+                                    ? "fill-rose-500 text-rose-500"
+                                    : "text-slate-300 hover:text-rose-400"
+                                }`}
+                              />
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -1840,7 +1842,7 @@ export default function Home() {
                         <button
                           type="button"
                           onClick={() => handleDownloadFile(doc.id, doc.name)}
-                          className="font-semibold text-sm hover:text-indigo-600 text-left break-words [overflow-wrap:anywhere] w-full"
+                          className="font-semibold text-sm hover:text-indigo-600 text-left break-all w-full"
                         >
                           {doc.name}
                         </button>
@@ -1939,7 +1941,7 @@ export default function Home() {
                                 onClick={() =>
                                   handleDownloadFile(doc.id, doc.name)
                                 }
-                                className="text-left break-words [overflow-wrap:anywhere] hover:text-indigo-600 transition min-w-0"
+                                className="text-left break-all hover:text-indigo-600 transition min-w-0"
                               >
                                 {doc.name}
                               </button>
@@ -2054,7 +2056,7 @@ export default function Home() {
                             : "bg-white border border-slate-200/80 text-slate-800 shadow-xs rounded-tl-none"
                         }`}
                       >
-                        <p className="whitespace-pre-wrap leading-relaxed break-words [overflow-wrap:anywhere]">
+                        <p className="whitespace-pre-wrap leading-relaxed break-all">
                           {msg.content}
                         </p>
 
@@ -2074,11 +2076,11 @@ export default function Home() {
                                   className="bg-indigo-50/70 border border-indigo-100 rounded-xl p-2.5 text-xs flex flex-wrap sm:flex-nowrap items-start justify-between gap-2 sm:gap-3"
                                 >
                                   <div className="min-w-0 flex-1">
-                                    <p className="font-semibold text-indigo-950 break-words [overflow-wrap:anywhere]">
+                                    <p className="font-semibold text-indigo-950 break-all">
                                       {f.name}
                                     </p>
                                     {f.relevanceSnippet && (
-                                      <p className="text-slate-600 italic line-clamp-2 mt-0.5 break-words [overflow-wrap:anywhere]">
+                                      <p className="text-slate-600 italic line-clamp-2 mt-0.5 break-words">
                                         &quot;{f.relevanceSnippet}&quot;
                                       </p>
                                     )}
